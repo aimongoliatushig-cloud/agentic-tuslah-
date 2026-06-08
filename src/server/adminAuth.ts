@@ -14,12 +14,8 @@ type AdminAuthResult =
   | { ok: false; status: number; code: string; message: string };
 
 function timingSafeEqualString(a: string, b: string) {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-
-  if (left.length !== right.length) {
-    return false;
-  }
+  const left = crypto.createHash("sha256").update(a).digest();
+  const right = crypto.createHash("sha256").update(b).digest();
 
   return crypto.timingSafeEqual(left, right);
 }
@@ -136,6 +132,11 @@ function readCookie(request: Request, name: string) {
   return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : undefined;
 }
 
+export function verifyAdminToken(providedToken: string | null | undefined) {
+  const token = getAdminToken();
+  return Boolean(token && providedToken && timingSafeEqualString(providedToken, token));
+}
+
 export function verifyAdminRequest(request: Request): AdminAuthResult {
   const misconfigured = isAdminMisconfigured();
 
@@ -150,7 +151,7 @@ export function verifyAdminRequest(request: Request): AdminAuthResult {
   const token = getAdminToken();
   const providedToken = request.headers.get("x-admin-token") ?? readBearerToken(request);
 
-  if (token && providedToken && timingSafeEqualString(providedToken, token)) {
+  if (token && verifyAdminToken(providedToken)) {
     return { ok: true, subject: "admin-token", role: getAdminRole() };
   }
 

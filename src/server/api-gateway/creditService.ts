@@ -23,35 +23,33 @@ export async function addCredit(clientId: string, amount: number, note?: string)
   }
 
   const supabase = getSupabaseAdminClient();
-  const currentBalance = await getBalance(clientId);
-  const balanceAfter = currentBalance + amount;
-
-  const { error: updateError } = await supabase
-    .from("api_clients")
-    .update({ credit_balance: balanceAfter, updated_at: new Date().toISOString() })
-    .eq("id", clientId);
-
-  if (updateError) {
-    throw new Error(`Unable to add credit: ${updateError.message}`);
-  }
-
-  const { data, error } = await supabase
-    .from("api_credit_transactions")
-    .insert({
-      client_id: clientId,
-      amount,
-      type: "credit",
-      balance_after: balanceAfter,
-      note: note ?? null
-    })
-    .select()
-    .single();
+  const { data, error } = await supabase.rpc("add_credit_atomic", {
+    p_client_id: clientId,
+    p_amount: amount,
+    p_note: note ?? null,
+    p_metadata: {}
+  });
 
   if (error) {
-    throw new Error(`Unable to create credit transaction: ${error.message}`);
+    throw new Error(`Unable to add credit: ${error.message}`);
   }
 
-  return data;
+  const row = data?.[0];
+
+  if (!row) {
+    throw new Error("Unable to add credit: no transaction returned.");
+  }
+
+  return {
+    id: row.transaction_id,
+    client_id: clientId,
+    amount,
+    type: "credit" as const,
+    balance_after: row.balance_after,
+    note: note ?? null,
+    metadata: {},
+    created_at: new Date().toISOString()
+  };
 }
 
 export async function deductCredit(clientId: string, amount: number, note?: string, requestId?: string) {
@@ -86,6 +84,47 @@ export async function deductCredit(clientId: string, amount: number, note?: stri
     balance_after: row.balance_after,
     note: note ?? null,
     metadata: { request_id: requestId ?? null },
+    created_at: new Date().toISOString()
+  };
+}
+
+export async function refundCreditForRequest(
+  clientId: string,
+  amount: number,
+  requestId: string,
+  note?: string
+) {
+  if (amount <= 0) {
+    throw new Error("Refund amount must be greater than zero.");
+  }
+
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("refund_credit_for_request", {
+    p_client_id: clientId,
+    p_amount: amount,
+    p_request_id: requestId,
+    p_note: note ?? null,
+    p_metadata: {}
+  });
+
+  if (error) {
+    throw new Error(`Unable to refund credit: ${error.message}`);
+  }
+
+  const row = data?.[0];
+
+  if (!row) {
+    throw new Error("Unable to refund credit: no transaction returned.");
+  }
+
+  return {
+    id: row.transaction_id,
+    client_id: clientId,
+    amount,
+    type: "credit" as const,
+    balance_after: row.balance_after,
+    note: note ?? null,
+    metadata: { refund_of_request_id: requestId },
     created_at: new Date().toISOString()
   };
 }
