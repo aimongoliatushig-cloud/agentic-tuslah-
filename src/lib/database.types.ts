@@ -45,6 +45,128 @@ export interface Database {
         };
         Relationships: [];
       };
+      admin_audit_logs: {
+        Row: {
+          id: string;
+          admin_subject: string;
+          admin_role: string;
+          action: string;
+          entity_type: string;
+          entity_id: string | null;
+          before: Json | null;
+          after: Json | null;
+          ip: string | null;
+          user_agent: string | null;
+          request_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          admin_subject: string;
+          admin_role?: string;
+          action: string;
+          entity_type: string;
+          entity_id?: string | null;
+          before?: Json | null;
+          after?: Json | null;
+          ip?: string | null;
+          user_agent?: string | null;
+          request_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          admin_subject?: string;
+          admin_role?: string;
+          action?: string;
+          entity_type?: string;
+          entity_id?: string | null;
+          before?: Json | null;
+          after?: Json | null;
+          ip?: string | null;
+          user_agent?: string | null;
+          request_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      api_keys: {
+        Row: {
+          id: string;
+          client_id: string;
+          key_id: string;
+          key_hash: string;
+          key_preview: string;
+          status: "active" | "suspended" | "revoked";
+          scopes: Json;
+          expires_at: string | null;
+          last_used_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          client_id: string;
+          key_id: string;
+          key_hash: string;
+          key_preview: string;
+          status?: "active" | "suspended" | "revoked";
+          scopes?: Json;
+          expires_at?: string | null;
+          last_used_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          client_id?: string;
+          key_id?: string;
+          key_hash?: string;
+          key_preview?: string;
+          status?: "active" | "suspended" | "revoked";
+          scopes?: Json;
+          expires_at?: string | null;
+          last_used_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "api_keys_client_id_fkey";
+            columns: ["client_id"];
+            isOneToOne: false;
+            referencedRelation: "api_clients";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      api_rate_limits: {
+        Row: {
+          id: string;
+          key: string;
+          window_start: string;
+          count: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          key: string;
+          window_start: string;
+          count?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          key?: string;
+          window_start?: string;
+          count?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       api_models: {
         Row: {
           id: string;
@@ -285,7 +407,21 @@ export interface Database {
       };
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      deduct_credit_if_sufficient: {
+        Args: {
+          p_client_id: string;
+          p_amount: number;
+          p_request_id: string;
+          p_note?: string | null;
+          p_metadata?: Json;
+        };
+        Returns: Array<{
+          transaction_id: string;
+          balance_after: number;
+        }>;
+      };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };

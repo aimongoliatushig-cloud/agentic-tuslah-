@@ -1,5 +1,5 @@
 import type { ProviderPayload, ProviderResult } from "@/server/api-gateway/types";
-import { readIntEnv, readJsonEnv } from "@/server/env";
+import { isProduction, readIntEnv, readJsonEnv } from "@/server/env";
 
 type RequestMode = "generic" | "openai-compatible";
 type OpenAiMessage = {
@@ -8,15 +8,19 @@ type OpenAiMessage = {
 };
 
 export function isMockProviderMode() {
-  return !process.env.UPSTREAM_AI_API_KEY || !process.env.UPSTREAM_AI_BASE_URL;
+  const missingConfig = !process.env.UPSTREAM_AI_API_KEY || !process.env.UPSTREAM_AI_BASE_URL;
+  return missingConfig && (!isProduction() || process.env.API_GATEWAY_ALLOW_MOCK_PROVIDER === "true");
 }
 
 export function getProviderRuntimeConfig() {
+  const hasProviderConfig = Boolean(process.env.UPSTREAM_AI_API_KEY && process.env.UPSTREAM_AI_BASE_URL);
+
   return {
     mockProviderMode: isMockProviderMode(),
+    providerReady: hasProviderConfig || isMockProviderMode(),
     requestMode: (process.env.UPSTREAM_AI_REQUEST_MODE ?? "generic") as RequestMode,
     timeoutMs: readIntEnv("UPSTREAM_AI_TIMEOUT_MS", 30000),
-    retryCount: readIntEnv("UPSTREAM_AI_RETRY_COUNT", 1)
+    retryCount: Math.min(3, readIntEnv("UPSTREAM_AI_RETRY_COUNT", 1))
   };
 }
 
@@ -179,6 +183,55 @@ async function parseProviderResponse(response: Response) {
   return { text };
 }
 
+function sanitizeExtraHeaders(headers: Record<string, string>) {
+  const result: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(headers)) {
+    const normalized = key.toLowerCase();
+
+    if (normalized === "authorization" || normalized === "content-type") {
+      continue;
+    }
+
+    result[key] = value;
+  }
+
+  return result;
+}
+
+function redactProviderData(data: ProviderResult["data"]): ProviderResult["data"] {
+  const maxLength = readIntEnv("API_GATEWAY_PROVIDER_RESPONSE_MAX_CHARS", 20_000);
+  const shouldStoreRaw = process.env.API_GATEWAY_STORE_RAW_PROVIDER_RESPONSE === "true";
+
+  if (shouldStoreRaw) {
+    return data;
+  }
+
+  const text = JSON.stringify(data, (key, value) => {
+    const normalized = key.toLowerCase();
+
+    if (normalized.includes("authorization") || normalized.includes("api_key") || normalized.includes("token")) {
+      return "[redacted]";
+    }
+
+    return value;
+  });
+
+  if (text.length <= maxLength) {
+    return JSON.parse(text) as ProviderResult["data"];
+  }
+
+  return {
+    truncated: true,
+    originalLength: text.length,
+    preview: text.slice(0, maxLength)
+  };
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -200,7 +253,7 @@ export async function callUpstreamProvider(
   const baseUrl = process.env.UPSTREAM_AI_BASE_URL;
   const config = getProviderRuntimeConfig();
 
-  if (config.mockProviderMode || !apiKey || !baseUrl) {
+  if (config.mockProviderMode) {
     return {
       success: true,
       data: {
@@ -216,10 +269,21 @@ export async function callUpstreamProvider(
     };
   }
 
+  if (!apiKey || !baseUrl) {
+    return {
+      success: false,
+      data: {
+        error: "provider_not_configured",
+        mockProviderMode: false
+      },
+      error: "Provider is not configured."
+    };
+  }
+
   const headers = {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
-    ...readJsonEnv("UPSTREAM_AI_EXTRA_HEADERS_JSON")
+    ...sanitizeExtraHeaders(readJsonEnv("UPSTREAM_AI_EXTRA_HEADERS_JSON"))
   };
   const body = JSON.stringify(buildRequestBody(payload, config.requestMode));
   let lastError = "Upstream provider request failed.";
@@ -237,12 +301,13 @@ export async function callUpstreamProvider(
         },
         config.timeoutMs
       );
-      const data = await parseProviderResponse(response);
+      const data = redactProviderData(await parseProviderResponse(response));
 
       if (!response.ok) {
         lastError = `Upstream provider failed with status ${response.status}.`;
 
         if (response.status >= 500 && attempt < config.retryCount) {
+          await sleep(150 * 2 ** attempt + Math.floor(Math.random() * 75));
           continue;
         }
 
@@ -265,6 +330,8 @@ export async function callUpstreamProvider(
       if (attempt >= config.retryCount) {
         break;
       }
+
+      await sleep(150 * 2 ** attempt + Math.floor(Math.random() * 75));
     }
   }
 

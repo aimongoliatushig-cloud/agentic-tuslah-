@@ -26,7 +26,7 @@ export async function GET() {
     status: databaseConnected ? "ok" : "degraded",
     database_connected: databaseConnected,
     mock_provider_mode: providerConfig.mockProviderMode,
-    provider_ready: !providerConfig.mockProviderMode,
+    provider_ready: providerConfig.providerReady,
     provider_request_mode: providerConfig.requestMode,
     provider_timeout_ms: providerConfig.timeoutMs,
     timestamp: new Date().toISOString()

@@ -13,12 +13,53 @@ import type {
   ProviderResult
 } from "@/server/api-gateway/types";
 import type { Json } from "@/lib/database.types";
-import { verifyApiKey } from "@/server/api-gateway/apiKeyService";
+import { parseApiKey, verifyApiKey } from "@/server/api-gateway/apiKeyService";
 
 const USAGE_EXHAUSTED_MESSAGE = "Таны хэрэглээ дууссан байна.";
 
 export async function validateClient(apiKey: string) {
   const supabase = getSupabaseAdminClient();
+  const parsedKey = parseApiKey(apiKey);
+
+  if (parsedKey) {
+    const { data: keyRow, error: keyError } = await supabase
+      .from("api_keys")
+      .select("id,client_id,key_hash,status,expires_at")
+      .eq("key_id", parsedKey.keyId)
+      .maybeSingle();
+
+    if (keyError && !keyError.message.includes("api_keys")) {
+      throw new Error(`Unable to validate API key: ${keyError.message}`);
+    }
+
+    if (keyRow) {
+      const expired = keyRow.expires_at ? new Date(keyRow.expires_at) < new Date() : false;
+
+      if (keyRow.status !== "active" || expired || !verifyApiKey(apiKey, keyRow.key_hash)) {
+        return null;
+      }
+
+      const { data: client, error: clientError } = await supabase
+        .from("api_clients")
+        .select("*")
+        .eq("id", keyRow.client_id)
+        .eq("status", "active")
+        .single();
+
+      if (clientError) {
+        return null;
+      }
+
+      supabase
+        .from("api_keys")
+        .update({ last_used_at: new Date().toISOString() })
+        .eq("id", keyRow.id)
+        .then(() => undefined);
+
+      return client;
+    }
+  }
+
   const { data, error } = await supabase
     .from("api_clients")
     .select("*")
@@ -313,7 +354,8 @@ export async function processGatewayRequest(params: {
   const transaction = await deductCredit(
     client.id,
     creditCost,
-    `Gateway request ${requestId} for ${model.name}`
+    `Gateway request ${requestId} for ${model.name}`,
+    requestId
   );
 
   await logUsage({
