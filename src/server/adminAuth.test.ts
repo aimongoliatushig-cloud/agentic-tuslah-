@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createAdminSessionCookieValue, verifyAdminRequest, verifyAdminSessionCookie } from "@/server/adminAuth";
+import {
+  createAdminSessionCookieValue,
+  verifyAdminRequest,
+  verifyAdminSessionCookie,
+  verifyAdminToken
+} from "@/server/adminAuth";
 
 describe("adminAuth", () => {
   afterEach(() => {
@@ -38,6 +43,9 @@ describe("adminAuth", () => {
 
     expect(denied.ok).toBe(false);
     expect(allowed.ok).toBe(true);
+    expect(verifyAdminToken("secret-admin-token")).toBe(true);
+    expect(verifyAdminToken("wrong")).toBe(false);
+    expect(verifyAdminToken("")).toBe(false);
   });
 
   it("allows explicitly unsafe local dev mode only when enabled", () => {

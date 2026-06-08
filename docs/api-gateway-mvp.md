@@ -231,9 +231,12 @@ Then run the production hardening migrations:
 supabase/migrations/202606080001_security_rate_limits_api_keys.sql
 supabase/migrations/202606080002_atomic_credit_rpc.sql
 supabase/migrations/202606080003_admin_audit_logs.sql
+supabase/migrations/202606080004_atomic_billing_rate_limit_admin.sql
 ```
 
-These add indexed API keys, rate limit counters, atomic credit deduction RPC, and admin audit logs.
+These add indexed API keys, rate limit counters, atomic credit deduction/refund/top-up
+RPCs, atomic rate-limit increments, transactional client/key/budget creation, and
+admin audit logs.
 
 ## 4. Run The Demo Seed
 

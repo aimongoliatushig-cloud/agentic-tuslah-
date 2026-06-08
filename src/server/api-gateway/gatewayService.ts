@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
-import { deductCredit, checkSufficientCredit } from "@/server/api-gateway/creditService";
+import { deductCredit, refundCreditForRequest } from "@/server/api-gateway/creditService";
 import { callUpstreamProvider } from "@/server/api-gateway/providerService";
 import { checkBudgetBeforeRequest } from "@/server/api-gateway/budgetService";
 import { readNumberEnv } from "@/server/env";
@@ -274,30 +274,6 @@ export async function processGatewayRequest(params: {
   }
 
   const creditCost = calculateCreditCost(model);
-  const creditCheck = await checkSufficientCredit(client.id, creditCost);
-
-  if (!creditCheck.sufficient) {
-    await logUsage({
-      client,
-      model,
-      requestId,
-      status: "failed",
-      creditCost: 0,
-      providerResult: {
-        success: false,
-        data: {
-          reason: "insufficient_credit",
-          balance: creditCheck.balance,
-          requiredCredit: creditCheck.requiredCredit
-        },
-        error: USAGE_EXHAUSTED_MESSAGE
-      },
-      latencyMs: Date.now() - startedAt
-    });
-
-    throw new Error(USAGE_EXHAUSTED_MESSAGE);
-  }
-
   const budgetCheck = await checkBudgetBeforeRequest({
     client,
     model,
@@ -331,6 +307,37 @@ export async function processGatewayRequest(params: {
     throw new Error(USAGE_EXHAUSTED_MESSAGE);
   }
 
+  let transaction: Awaited<ReturnType<typeof deductCredit>>;
+
+  try {
+    transaction = await deductCredit(
+      client.id,
+      creditCost,
+      `Gateway reservation ${requestId} for ${model.name}`,
+      requestId
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to reserve credit.";
+    await logUsage({
+      client,
+      model,
+      requestId,
+      status: "failed",
+      creditCost: 0,
+      providerResult: {
+        success: false,
+        data: {
+          reason: "credit_reservation_failed",
+          requiredCredit: creditCost
+        },
+        error: message.includes("Insufficient") ? USAGE_EXHAUSTED_MESSAGE : message
+      },
+      latencyMs: Date.now() - startedAt
+    });
+
+    throw new Error(message.includes("Insufficient") ? USAGE_EXHAUSTED_MESSAGE : message);
+  }
+
   const providerResult = await forwardToProvider({
     model,
     request: params.payload
@@ -338,25 +345,43 @@ export async function processGatewayRequest(params: {
   const latencyMs = Date.now() - startedAt;
 
   if (!providerResult.success) {
+    let refundError: string | null = null;
+
+    try {
+      await refundCreditForRequest(
+        client.id,
+        creditCost,
+        requestId,
+        `Gateway refund ${requestId} for failed ${model.name}`
+      );
+    } catch (error) {
+      refundError = error instanceof Error ? error.message : "Unable to refund reserved credit.";
+    }
+
     await logUsage({
       client,
       model,
       requestId,
       status: "failed",
       creditCost: 0,
-      providerResult,
+      providerResult: refundError
+        ? {
+            ...providerResult,
+            data: {
+              provider: providerResult.data,
+              refundError
+            }
+          }
+        : providerResult,
       latencyMs
     });
 
+    if (refundError) {
+      throw new Error(`Provider request failed and credit refund failed: ${refundError}`);
+    }
+
     throw new Error(providerResult.error ?? "Provider request failed.");
   }
-
-  const transaction = await deductCredit(
-    client.id,
-    creditCost,
-    `Gateway request ${requestId} for ${model.name}`,
-    requestId
-  );
 
   await logUsage({
     client,

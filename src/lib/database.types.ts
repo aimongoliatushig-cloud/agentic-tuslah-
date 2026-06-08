@@ -408,7 +408,62 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      add_credit_atomic: {
+        Args: {
+          p_client_id: string;
+          p_amount: number;
+          p_note?: string | null;
+          p_metadata?: Json;
+        };
+        Returns: Array<{
+          transaction_id: string;
+          balance_after: number;
+        }>;
+      };
+      create_api_client_with_key: {
+        Args: {
+          p_name: string;
+          p_api_key_hash: string;
+          p_api_key_preview: string;
+          p_key_id: string;
+          p_initial_credit?: number;
+          p_metadata?: Json;
+          p_default_budget_limits?: Json;
+        };
+        Returns: Array<{
+          id: string;
+          name: string;
+          api_key_preview: string;
+          status: "active" | "suspended" | "disabled";
+          credit_balance: number;
+          metadata: Json;
+          created_at: string;
+          updated_at: string;
+        }>;
+      };
       deduct_credit_if_sufficient: {
+        Args: {
+          p_client_id: string;
+          p_amount: number;
+          p_request_id: string;
+          p_note?: string | null;
+          p_metadata?: Json;
+        };
+        Returns: Array<{
+          transaction_id: string;
+          balance_after: number;
+        }>;
+      };
+      increment_rate_limit: {
+        Args: {
+          p_key: string;
+          p_window_start: string;
+        };
+        Returns: Array<{
+          count: number;
+        }>;
+      };
+      refund_credit_for_request: {
         Args: {
           p_client_id: string;
           p_amount: number;

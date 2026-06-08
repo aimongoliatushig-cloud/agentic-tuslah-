@@ -23,41 +23,16 @@ export async function checkRateLimit(params: {
   const key = `${params.route}:${hashLimiterKey(keyMaterial)}`;
   const start = windowStart(windowSeconds);
   const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("increment_rate_limit", {
+    p_key: key,
+    p_window_start: start
+  });
 
-  const { data: existing, error: readError } = await supabase
-    .from("api_rate_limits")
-    .select("id,count")
-    .eq("key", key)
-    .eq("window_start", start)
-    .maybeSingle();
-
-  if (readError) {
-    throw new Error(`Unable to read rate limit: ${readError.message}`);
+  if (error) {
+    throw new Error(`Unable to increment rate limit: ${error.message}`);
   }
 
-  const nextCount = (existing?.count ?? 0) + 1;
-
-  if (existing) {
-    const { error } = await supabase
-      .from("api_rate_limits")
-      .update({ count: nextCount })
-      .eq("id", existing.id);
-
-    if (error) {
-      throw new Error(`Unable to update rate limit: ${error.message}`);
-    }
-  } else {
-    const { error } = await supabase.from("api_rate_limits").insert({
-      key,
-      window_start: start,
-      count: nextCount
-    });
-
-    if (error) {
-      throw new Error(`Unable to create rate limit: ${error.message}`);
-    }
-  }
-
+  const nextCount = data?.[0]?.count ?? 0;
   const retryAfter = Math.max(1, Math.ceil((Date.parse(start) + windowSeconds * 1000 - Date.now()) / 1000));
 
   return {
