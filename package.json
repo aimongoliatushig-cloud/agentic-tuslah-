@@ -7,6 +7,8 @@
     "build": "next build",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run",
     "seed:api-gateway": "tsx scripts/seed-api-gateway.ts",
     "test:api-gateway": "tsx scripts/test-api-gateway.ts"
   },
@@ -20,11 +22,12 @@
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
-    "eslint": "^9.39.1",
     "dotenv": "^17.2.3",
+    "eslint": "^9.39.1",
     "eslint-config-next": "16.2.7",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
   },
   "overrides": {
     "postcss": "8.5.15"

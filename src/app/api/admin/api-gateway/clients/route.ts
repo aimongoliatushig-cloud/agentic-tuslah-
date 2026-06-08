@@ -6,6 +6,7 @@ import {
 } from "@/server/api-gateway/apiKeyService";
 import { jsonError, jsonOk, readJson, requireAdminAccess } from "@/server/http";
 import type { Json } from "@/lib/database.types";
+import { writeAdminAuditLog } from "@/server/adminAudit";
 
 export const runtime = "nodejs";
 
@@ -65,6 +66,15 @@ export async function POST(request: Request) {
       return jsonError(error.message, 500);
     }
 
+    const keyId = apiKey.split("_")[2];
+    const { error: keyError } = await supabase.from("api_keys").insert({
+      client_id: data.id,
+      key_id: keyId,
+      key_hash: hashApiKey(apiKey),
+      key_preview: createApiKeyPreview(apiKey),
+      status: "active"
+    });
+
     const { error: budgetError } = await supabase.from("api_client_budget_limits").insert([
       {
         client_id: data.id,
@@ -92,10 +102,19 @@ export async function POST(request: Request) {
       }
     ]);
 
+    await writeAdminAuditLog({
+      request,
+      action: "api_client.create",
+      entityType: "api_client",
+      entityId: data.id,
+      after: data
+    });
+
     return jsonOk(
       {
         client: data,
         apiKey,
+        keyWarning: keyError?.message,
         budgetWarning: budgetError?.message
       },
       { status: 201 }

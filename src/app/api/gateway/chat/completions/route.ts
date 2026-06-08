@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 
-import { jsonError, jsonOk } from "@/server/http";
+import { jsonError, jsonOk, readJson } from "@/server/http";
 import { processGatewayRequest } from "@/server/api-gateway/gatewayService";
 import type { GatewayGeneratePayload } from "@/server/api-gateway/types";
+import { checkRateLimit } from "@/server/api-gateway/rateLimitService";
+import { validateGatewayGeneratePayload } from "@/server/api-gateway/validation";
 
 export const runtime = "nodejs";
 
@@ -171,22 +173,42 @@ export async function POST(request: Request) {
     const apiKey = readBearerToken(request);
 
     if (!apiKey) {
-      return jsonError("Missing Authorization: Bearer CLIENT_API_KEY header.", 401);
+      return jsonError("Missing Authorization: Bearer CLIENT_API_KEY header.", 401, "unauthorized");
     }
 
-    const body = (await request.json()) as ChatCompletionsBody;
+    const rateLimit = await checkRateLimit({
+      apiKey,
+      ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim(),
+      route: "chat-completions"
+    });
+
+    if (!rateLimit.allowed) {
+      return jsonError("Rate limit exceeded.", 429, "rate_limited", {
+        retryAfter: rateLimit.retryAfter,
+        limit: rateLimit.limit
+      });
+    }
+
+    const body = await readJson<ChatCompletionsBody>(request);
 
     if (!body.model) {
-      return jsonError("Request body must include model.", 400);
+      return jsonError("Request body must include model.", 400, "invalid_request");
     }
 
     if (!body.messages || body.messages.length === 0) {
-      return jsonError("Request body must include messages.", 400);
+      return jsonError("Request body must include messages.", 400, "invalid_request");
+    }
+
+    const gatewayPayload = buildGatewayPayload(body);
+    const validation = validateGatewayGeneratePayload(gatewayPayload);
+
+    if (!validation.ok) {
+      return jsonError("Invalid gateway request.", 400, "invalid_request", validation.details);
     }
 
     const result = await processGatewayRequest({
       apiKey,
-      payload: buildGatewayPayload(body)
+      payload: validation.payload
     });
     const completion = toOpenAiCompatibleResponse(result);
 
@@ -208,6 +230,17 @@ export async function POST(request: Request) {
             ? 404
             : 400;
 
-    return jsonError(message, status);
+    const code =
+      status === 401
+        ? "unauthorized"
+        : status === 402
+          ? "usage_exhausted"
+          : status === 404
+            ? "model_unavailable"
+            : message.includes("too large")
+              ? "payload_too_large"
+              : "gateway_error";
+
+    return jsonError(message, status, code);
   }
 }

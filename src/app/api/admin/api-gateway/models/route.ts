@@ -1,6 +1,7 @@
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { jsonError, jsonOk, readJson, requireAdminAccess } from "@/server/http";
 import type { Json } from "@/lib/database.types";
+import { writeAdminAuditLog } from "@/server/adminAudit";
 
 export const runtime = "nodejs";
 
@@ -81,6 +82,14 @@ export async function POST(request: Request) {
     if (error) {
       return jsonError(error.message, 500);
     }
+
+    await writeAdminAuditLog({
+      request,
+      action: "api_model.create",
+      entityType: "api_model",
+      entityId: data.id,
+      after: data
+    });
 
     return jsonOk({ model: data }, { status: 201 });
   } catch (error) {

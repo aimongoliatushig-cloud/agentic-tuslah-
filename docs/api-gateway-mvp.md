@@ -225,6 +225,16 @@ Pricing sources checked:
 
 Budget limits are enforced before provider calls. Text requests use a conservative estimate based on input text length and `max_tokens`; image requests use the model `unit_price_usd`.
 
+Then run the production hardening migrations:
+
+```text
+supabase/migrations/202606080001_security_rate_limits_api_keys.sql
+supabase/migrations/202606080002_atomic_credit_rpc.sql
+supabase/migrations/202606080003_admin_audit_logs.sql
+```
+
+These add indexed API keys, rate limit counters, atomic credit deduction RPC, and admin audit logs.
+
 ## 4. Run The Demo Seed
 
 ```bash

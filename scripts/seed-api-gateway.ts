@@ -96,6 +96,18 @@ async function main() {
     throw new Error(`Unable to seed demo client: ${clientCreateError.message}`);
   }
 
+  const { error: keyCreateError } = await supabase.from("api_keys").insert({
+    client_id: client.id,
+    key_id: apiKey.split("_")[2],
+    key_hash: hashApiKey(apiKey),
+    key_preview: createApiKeyPreview(apiKey),
+    status: "active"
+  });
+
+  if (keyCreateError) {
+    throw new Error(`Unable to seed demo API key: ${keyCreateError.message}`);
+  }
+
   const transaction = await addCredit(client.id, startingCreditBalance, "Demo seed credit");
   const baseUrl = process.env.API_GATEWAY_TEST_BASE_URL ?? "http://localhost:3000";
 
