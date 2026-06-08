@@ -13,7 +13,7 @@
     "test:api-gateway": "tsx scripts/test-api-gateway.ts"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.107.0",
+    "@supabase/supabase-js": "2.108.0",
     "next": "16.2.7",
     "react": "19.2.7",
     "react-dom": "19.2.7"
