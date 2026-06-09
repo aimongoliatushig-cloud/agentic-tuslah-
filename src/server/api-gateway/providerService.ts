@@ -222,7 +222,7 @@ function redactProviderData(data: ProviderResult["data"]): ProviderResult["data"
   const text = JSON.stringify(data, (key, value) => {
     const normalized = key.toLowerCase();
 
-    if (normalized.includes("authorization") || normalized.includes("api_key") || normalized.includes("token")) {
+    if (isSensitiveProviderField(normalized)) {
       return "[redacted]";
     }
 
@@ -238,6 +238,19 @@ function redactProviderData(data: ProviderResult["data"]): ProviderResult["data"
     originalLength: text.length,
     preview: text.slice(0, maxLength)
   };
+}
+
+function isSensitiveProviderField(normalizedKey: string) {
+  return (
+    normalizedKey.includes("authorization") ||
+    normalizedKey.includes("api_key") ||
+    normalizedKey.includes("apikey") ||
+    normalizedKey.includes("secret") ||
+    normalizedKey.includes("password") ||
+    normalizedKey === "token" ||
+    normalizedKey.endsWith("_token") && !normalizedKey.endsWith("_tokens") ||
+    normalizedKey.endsWith("-token") && !normalizedKey.endsWith("-tokens")
+  );
 }
 
 function sleep(ms: number) {

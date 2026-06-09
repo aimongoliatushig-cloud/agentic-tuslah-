@@ -50,4 +50,52 @@ describe("callUpstreamProvider", () => {
     expect(result.error).toContain("Provider API key is invalid");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("keeps usage token counts while redacting actual provider secrets", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("UPSTREAM_AI_API_KEY", "sk-valid-ascii-key");
+    vi.stubEnv("UPSTREAM_AI_BASE_URL", "https://api.deepseek.com");
+    vi.stubEnv("UPSTREAM_AI_REQUEST_MODE", "openai-compatible");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl-test",
+          choices: [{ message: { content: "hello" } }],
+          usage: {
+            prompt_tokens: 123,
+            completion_tokens: 45,
+            total_tokens: 168,
+            prompt_cache_hit_tokens: 100,
+            prompt_cache_miss_tokens: 23
+          },
+          access_token: "provider-secret"
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      )
+    );
+
+    const result = await callUpstreamProvider({
+      model,
+      request: {
+        model: "deepseek-chat",
+        prompt: "hi"
+      }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.inputTokens).toBe(123);
+    expect(result.outputTokens).toBe(45);
+    expect(result.totalTokens).toBe(168);
+    expect(result.inputCacheHitTokens).toBe(100);
+    expect(result.inputCacheMissTokens).toBe(23);
+    expect((result.data as { access_token?: string }).access_token).toBe("[redacted]");
+    expect(
+      (result.data as { usage?: { prompt_tokens?: number } }).usage?.prompt_tokens
+    ).toBe(123);
+  });
 });
