@@ -27,6 +27,7 @@ export async function GET() {
     database_connected: databaseConnected,
     mock_provider_mode: providerConfig.mockProviderMode,
     provider_ready: providerConfig.providerReady,
+    kie_provider_ready: providerConfig.kieProviderReady,
     provider_request_mode: providerConfig.requestMode,
     provider_timeout_ms: providerConfig.timeoutMs,
     timestamp: new Date().toISOString()

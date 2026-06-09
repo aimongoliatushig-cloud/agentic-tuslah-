@@ -6,6 +6,7 @@ type OpenAiMessage = {
   role: string;
   content: unknown;
 };
+type KieTaskState = "waiting" | "queuing" | "generating" | "success" | "fail" | "unknown";
 
 export function isMockProviderMode() {
   const missingConfig = !process.env.UPSTREAM_AI_API_KEY || !process.env.UPSTREAM_AI_BASE_URL;
@@ -14,10 +15,12 @@ export function isMockProviderMode() {
 
 export function getProviderRuntimeConfig() {
   const hasProviderConfig = Boolean(process.env.UPSTREAM_AI_API_KEY && process.env.UPSTREAM_AI_BASE_URL);
+  const hasKieProviderConfig = Boolean(process.env.KIE_AI_API_KEY);
 
   return {
     mockProviderMode: isMockProviderMode(),
-    providerReady: hasProviderConfig || isMockProviderMode(),
+    providerReady: hasProviderConfig || hasKieProviderConfig || isMockProviderMode(),
+    kieProviderReady: hasKieProviderConfig,
     requestMode: (process.env.UPSTREAM_AI_REQUEST_MODE ?? "generic") as RequestMode,
     timeoutMs: readIntEnv("UPSTREAM_AI_TIMEOUT_MS", 30000),
     retryCount: Math.min(3, readIntEnv("UPSTREAM_AI_RETRY_COUNT", 1))
@@ -36,8 +39,41 @@ function getPrompt(payload: ProviderPayload) {
   return "";
 }
 
+function normalizeString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isKieGptImage2Model(payload: ProviderPayload) {
+  const provider = payload.model.provider.toLowerCase();
+  const modelName = payload.model.name.toLowerCase();
+  const providerModel = payload.model.provider_model.toLowerCase();
+
+  return (
+    provider === "kie.ai" &&
+    (
+      modelName === "gpt-image-2" ||
+      providerModel === "gpt-image-2-text-to-image" ||
+      providerModel === "openai/gpt-image-2"
+    )
+  );
+}
+
+function isKieProvider(payload: ProviderPayload) {
+  return payload.model.provider.toLowerCase() === "kie.ai";
+}
+
+function getKieProviderModel(payload: ProviderPayload) {
+  const providerModel = payload.model.provider_model.toLowerCase();
+
+  if (providerModel === "openai/gpt-image-2" || payload.model.name.toLowerCase() === "gpt-image-2") {
+    return "gpt-image-2-text-to-image";
+  }
+
+  return payload.model.provider_model;
 }
 
 function getOpenAiMessages(payload: ProviderPayload) {
@@ -87,6 +123,29 @@ function buildProviderUrl(baseUrl: string, requestMode: RequestMode) {
   }
 
   return normalized;
+}
+
+function buildKieUrl(path: string) {
+  const baseUrl = (process.env.KIE_AI_BASE_URL ?? "https://api.kie.ai").replace(/\/$/, "");
+  return `${baseUrl}${path}`;
+}
+
+function getKieAspectRatio(payload: ProviderPayload) {
+  const input = isRecord(payload.request.input) ? payload.request.input : {};
+  const parameters = payload.request.parameters ?? {};
+  const value = normalizeString(parameters.aspect_ratio) || normalizeString(input.aspect_ratio);
+
+  return value || "auto";
+}
+
+function buildKieCreateTaskBody(payload: ProviderPayload) {
+  return {
+    model: getKieProviderModel(payload),
+    input: {
+      prompt: getPrompt(payload),
+      aspect_ratio: getKieAspectRatio(payload)
+    }
+  };
 }
 
 function extractTokenUsage(data: ProviderResult["data"]) {
@@ -143,6 +202,112 @@ function extractTokenUsage(data: ProviderResult["data"]) {
 
 function arrayLength(value: unknown) {
   return Array.isArray(value) ? value.length : undefined;
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseJsonObject(value: unknown) {
+  if (isRecord(value)) {
+    return value;
+  }
+
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectStringUrls(value: unknown, result = new Set<string>()) {
+  if (typeof value === "string") {
+    if (/^https?:\/\//i.test(value)) {
+      result.add(value);
+    }
+
+    return result;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectStringUrls(item, result);
+    }
+
+    return result;
+  }
+
+  if (isRecord(value)) {
+    for (const nested of Object.values(value)) {
+      collectStringUrls(nested, result);
+    }
+  }
+
+  return result;
+}
+
+function extractKieTaskId(data: ProviderResult["data"]) {
+  if (!isRecord(data)) {
+    return null;
+  }
+
+  const rootTaskId = normalizeString(data.taskId);
+  if (rootTaskId) {
+    return rootTaskId;
+  }
+
+  const nested = isRecord(data.data) ? data.data : null;
+  const nestedTaskId = normalizeString(nested?.taskId);
+
+  return nestedTaskId || null;
+}
+
+function extractKieTaskData(data: ProviderResult["data"]) {
+  if (!isRecord(data)) {
+    return {};
+  }
+
+  return isRecord(data.data) ? data.data : data;
+}
+
+function extractKieState(taskData: Record<string, unknown>): KieTaskState {
+  const value = (
+    normalizeString(taskData.state) ||
+    normalizeString(taskData.status) ||
+    normalizeString(taskData.taskStatus)
+  ).toLowerCase();
+
+  if (value === "waiting" || value === "queuing" || value === "generating") {
+    return value;
+  }
+
+  if (["success", "completed", "complete", "finished", "done"].includes(value)) {
+    return "success";
+  }
+
+  if (["fail", "failed", "error", "cancelled", "canceled", "create_task_failed", "generate_failed"].includes(value)) {
+    return "fail";
+  }
+
+  return "unknown";
+}
+
+function extractKieResult(taskData: Record<string, unknown>) {
+  const parsedResult = parseJsonObject(taskData.resultJson);
+  const urlSet = collectStringUrls(parsedResult ?? taskData);
+  const resultUrls = Array.from(urlSet);
+  const creditsConsumed =
+    numberValue(taskData.creditsConsumed) ??
+    numberValue(taskData.credits_consumed) ??
+    numberValue(parsedResult?.creditsConsumed) ??
+    numberValue(parsedResult?.credits_consumed);
+
+  return { resultUrls, creditsConsumed };
 }
 
 function extractImageCount(data: ProviderResult["data"]): number | undefined {
@@ -271,9 +436,183 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   }
 }
 
+async function callKieGptImage2Provider(payload: ProviderPayload): Promise<ProviderResult> {
+  const apiKey = process.env.KIE_AI_API_KEY;
+  const timeoutMs = readIntEnv("UPSTREAM_AI_TIMEOUT_MS", 30000);
+  const pollIntervalMs = readIntEnv("KIE_AI_POLL_INTERVAL_MS", 3000);
+  const pollTimeoutMs = readIntEnv("KIE_AI_POLL_TIMEOUT_MS", 180000);
+  const prompt = getPrompt(payload);
+
+  if (!apiKey) {
+    return {
+      success: false,
+      data: {
+        error: "kie_provider_not_configured"
+      },
+      error: "Kie provider is not configured."
+    };
+  }
+
+  if (!isValidProviderApiKey(apiKey)) {
+    return {
+      success: false,
+      data: {
+        error: "kie_provider_invalid_api_key"
+      },
+      error: "Kie provider API key is invalid or contains unsupported characters."
+    };
+  }
+
+  if (!prompt) {
+    return {
+      success: false,
+      data: {
+        error: "kie_prompt_required"
+      },
+      error: "Prompt is required for Kie GPT Image 2."
+    };
+  }
+
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json"
+  };
+
+  try {
+    const createResponse = await fetchWithTimeout(
+      buildKieUrl("/api/v1/jobs/createTask"),
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildKieCreateTaskBody(payload))
+      },
+      timeoutMs
+    );
+    const createData = redactProviderData(await parseProviderResponse(createResponse));
+
+    if (!createResponse.ok) {
+      return {
+        success: false,
+        data: createData,
+        error: `Kie provider failed with status ${createResponse.status}.`
+      };
+    }
+
+    const taskId = extractKieTaskId(createData);
+
+    if (!taskId) {
+      return {
+        success: false,
+        data: createData,
+        error: "Kie provider did not return a task ID."
+      };
+    }
+
+    const startedAt = Date.now();
+    let latestData: ProviderResult["data"] = createData;
+
+    while (Date.now() - startedAt < pollTimeoutMs) {
+      await sleep(pollIntervalMs);
+
+      const detailResponse = await fetchWithTimeout(
+        buildKieUrl(`/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`),
+        {
+          method: "GET",
+          headers
+        },
+        timeoutMs
+      );
+      latestData = redactProviderData(await parseProviderResponse(detailResponse));
+
+      if (!detailResponse.ok) {
+        return {
+          success: false,
+          data: latestData,
+          error: `Kie task detail failed with status ${detailResponse.status}.`
+        };
+      }
+
+      const taskData = extractKieTaskData(latestData);
+      const state = extractKieState(taskData);
+
+      if (state === "success") {
+        const { resultUrls, creditsConsumed } = extractKieResult(taskData);
+        const data = redactProviderData({
+          provider: "kie.ai",
+          taskId,
+          state,
+          model: getKieProviderModel(payload),
+          result_urls: resultUrls,
+          images: resultUrls,
+          output: resultUrls.join("\n"),
+          creditsConsumed,
+          raw: latestData
+        });
+
+        return {
+          success: true,
+          data,
+          imageCount: resultUrls.length || 1,
+          billableUnits: (creditsConsumed ?? resultUrls.length) || 1
+        };
+      }
+
+      if (state === "fail") {
+        return {
+          success: false,
+          data: latestData,
+          error:
+            normalizeString(taskData.failMsg) ||
+            normalizeString(taskData.error_message) ||
+            "Kie provider task failed."
+        };
+      }
+    }
+
+    return {
+      success: true,
+      data: redactProviderData({
+        provider: "kie.ai",
+        taskId,
+        state: "pending",
+        model: getKieProviderModel(payload),
+        output: `Kie task accepted but did not complete before timeout. Task ID: ${taskId}`,
+        raw: latestData
+      }),
+      imageCount: 0,
+      billableUnits: 1
+    };
+  } catch (error) {
+    return {
+      success: false,
+      data: {
+        error: error instanceof Error ? error.message : "Kie provider request failed."
+      },
+      error: error instanceof Error ? error.message : "Kie provider request failed."
+    };
+  }
+}
+
 export async function callUpstreamProvider(
   payload: ProviderPayload
 ): Promise<ProviderResult> {
+  if (isKieGptImage2Model(payload)) {
+    return callKieGptImage2Provider(payload);
+  }
+
+  if (isKieProvider(payload)) {
+    return {
+      success: false,
+      data: {
+        error: "unsupported_kie_model",
+        provider: payload.model.provider,
+        model: payload.model.name,
+        providerModel: payload.model.provider_model
+      },
+      error: "Only Kie GPT Image 2 is currently enabled."
+    };
+  }
+
   const apiKey = process.env.UPSTREAM_AI_API_KEY;
   const baseUrl = process.env.UPSTREAM_AI_BASE_URL;
   const config = getProviderRuntimeConfig();
