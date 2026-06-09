@@ -193,10 +193,22 @@ function sanitizeExtraHeaders(headers: Record<string, string>) {
       continue;
     }
 
+    if (!isByteString(value)) {
+      continue;
+    }
+
     result[key] = value;
   }
 
   return result;
+}
+
+function isByteString(value: string) {
+  return Array.from(value).every((char) => char.charCodeAt(0) <= 255);
+}
+
+function isValidProviderApiKey(value: string) {
+  return isByteString(value) && !/[А-Яа-яӨөҮүЁё]/.test(value);
 }
 
 function redactProviderData(data: ProviderResult["data"]): ProviderResult["data"] {
@@ -277,6 +289,17 @@ export async function callUpstreamProvider(
         mockProviderMode: false
       },
       error: "Provider is not configured."
+    };
+  }
+
+  if (!isValidProviderApiKey(apiKey)) {
+    return {
+      success: false,
+      data: {
+        error: "provider_invalid_api_key",
+        reason: "UPSTREAM_AI_API_KEY contains non-HTTP-header characters. Replace placeholder text with the real provider key."
+      },
+      error: "Provider API key is invalid or contains unsupported characters."
     };
   }
 
