@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createAdminSessionCookieValue,
+  isAdminCookieSecure,
   verifyAdminRequest,
   verifyAdminSessionCookie,
   verifyAdminToken
@@ -65,5 +66,17 @@ describe("adminAuth", () => {
 
     expect(verifyAdminSessionCookie(cookie).ok).toBe(true);
     expect(verifyAdminSessionCookie(`${cookie}x`).ok).toBe(false);
+  });
+
+  it("allows explicit insecure cookie override for temporary HTTP access", () => {
+    vi.stubEnv("NODE_ENV", "production");
+
+    expect(isAdminCookieSecure()).toBe(true);
+
+    vi.stubEnv("API_GATEWAY_ADMIN_COOKIE_SECURE", "false");
+    expect(isAdminCookieSecure()).toBe(false);
+
+    vi.stubEnv("API_GATEWAY_ADMIN_COOKIE_SECURE", "true");
+    expect(isAdminCookieSecure()).toBe(true);
   });
 });

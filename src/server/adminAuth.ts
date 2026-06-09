@@ -28,6 +28,20 @@ function getAdminRole() {
   return optionalEnv("API_GATEWAY_ADMIN_ROLE") ?? "owner";
 }
 
+export function isAdminCookieSecure() {
+  const override = optionalEnv("API_GATEWAY_ADMIN_COOKIE_SECURE");
+
+  if (override === "false") {
+    return false;
+  }
+
+  if (override === "true") {
+    return true;
+  }
+
+  return isProduction();
+}
+
 function isAdminMisconfigured(): AdminAuthResult | null {
   if (getAdminToken() || isUnsafeAdminDevAllowed()) {
     return null;
@@ -187,7 +201,7 @@ export function setAdminSessionCookie(response: NextResponse, token: string) {
   response.cookies.set(ADMIN_SESSION_COOKIE, createAdminSessionCookieValue(token), {
     httpOnly: true,
     sameSite: "lax",
-    secure: isProduction(),
+    secure: isAdminCookieSecure(),
     maxAge: SESSION_TTL_MS / 1000,
     path: "/"
   });
@@ -197,7 +211,7 @@ export function clearAdminSessionCookie(response: NextResponse) {
   response.cookies.set(ADMIN_SESSION_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",
-    secure: isProduction(),
+    secure: isAdminCookieSecure(),
     maxAge: 0,
     path: "/"
   });
