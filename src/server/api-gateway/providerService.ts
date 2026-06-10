@@ -139,8 +139,11 @@ function getKieAspectRatio(payload: ProviderPayload) {
 }
 
 function buildKieCreateTaskBody(payload: ProviderPayload) {
+  const callbackUrl = normalizeString(process.env.KIE_AI_CALLBACK_URL);
+
   return {
     model: getKieProviderModel(payload),
+    ...(callbackUrl ? { callBackUrl: callbackUrl } : {}),
     input: {
       prompt: getPrompt(payload),
       aspect_ratio: getKieAspectRatio(payload)
@@ -256,15 +259,57 @@ function extractKieTaskId(data: ProviderResult["data"]) {
     return null;
   }
 
-  const rootTaskId = normalizeString(data.taskId);
+  const rootTaskId =
+    normalizeString(data.taskId) ||
+    normalizeString(data.task_id) ||
+    normalizeString(data.id) ||
+    normalizeString(data.jobId) ||
+    normalizeString(data.job_id);
   if (rootTaskId) {
     return rootTaskId;
   }
 
   const nested = isRecord(data.data) ? data.data : null;
-  const nestedTaskId = normalizeString(nested?.taskId);
+  const parsedNested = parseJsonObject(data.data);
+  const nestedTaskId =
+    normalizeString(nested?.taskId) ||
+    normalizeString(nested?.task_id) ||
+    normalizeString(nested?.id) ||
+    normalizeString(nested?.jobId) ||
+    normalizeString(nested?.job_id) ||
+    normalizeString(parsedNested?.taskId) ||
+    normalizeString(parsedNested?.task_id) ||
+    normalizeString(parsedNested?.id) ||
+    normalizeString(parsedNested?.jobId) ||
+    normalizeString(parsedNested?.job_id);
 
   return nestedTaskId || null;
+}
+
+function getKieEnvelopeError(data: ProviderResult["data"]) {
+  if (!isRecord(data)) {
+    return null;
+  }
+
+  const code = data.code;
+  const success =
+    code === undefined ||
+    code === 200 ||
+    code === "200" ||
+    code === 0 ||
+    code === "0";
+
+  if (success) {
+    return null;
+  }
+
+  return (
+    normalizeString(data.msg) ||
+    normalizeString(data.message) ||
+    normalizeString(data.error) ||
+    normalizeString(extractKieTaskData(data).failMsg) ||
+    `Kie provider returned code ${String(code)}.`
+  );
 }
 
 function extractKieTaskData(data: ProviderResult["data"]) {
@@ -498,6 +543,16 @@ async function callKieGptImage2Provider(payload: ProviderPayload): Promise<Provi
       };
     }
 
+    const createEnvelopeError = getKieEnvelopeError(createData);
+
+    if (createEnvelopeError) {
+      return {
+        success: false,
+        data: createData,
+        error: createEnvelopeError
+      };
+    }
+
     const taskId = extractKieTaskId(createData);
 
     if (!taskId) {
@@ -529,6 +584,16 @@ async function callKieGptImage2Provider(payload: ProviderPayload): Promise<Provi
           success: false,
           data: latestData,
           error: `Kie task detail failed with status ${detailResponse.status}.`
+        };
+      }
+
+      const detailEnvelopeError = getKieEnvelopeError(latestData);
+
+      if (detailEnvelopeError) {
+        return {
+          success: false,
+          data: latestData,
+          error: detailEnvelopeError
         };
       }
 

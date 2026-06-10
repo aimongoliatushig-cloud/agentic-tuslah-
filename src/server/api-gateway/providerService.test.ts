@@ -213,4 +213,97 @@ describe("callUpstreamProvider", () => {
       "https://api.kie.ai/api/v1/jobs/recordInfo?taskId=task_gptimage_test"
     );
   });
+
+  it("surfaces Kie logical errors returned inside an HTTP 200 envelope", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("KIE_AI_API_KEY", "kie-valid-ascii-key");
+    vi.stubEnv("KIE_AI_BASE_URL", "https://api.kie.ai");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: 400,
+          msg: "invalid model or parameters",
+          data: null
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      )
+    );
+
+    const result = await callUpstreamProvider({
+      model: kieModel,
+      request: {
+        model: "gpt-image-2",
+        prompt: "Create a clean icon"
+      }
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("invalid model or parameters");
+  });
+
+  it("accepts alternate Kie task id field names", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("KIE_AI_API_KEY", "kie-valid-ascii-key");
+    vi.stubEnv("KIE_AI_BASE_URL", "https://api.kie.ai");
+    vi.stubEnv("KIE_AI_POLL_INTERVAL_MS", "1");
+    vi.stubEnv("KIE_AI_POLL_TIMEOUT_MS", "50");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 200,
+            msg: "success",
+            data: {
+              task_id: "task_alt_id"
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 200,
+            msg: "success",
+            data: {
+              taskId: "task_alt_id",
+              state: "success",
+              resultJson: JSON.stringify({
+                images: ["https://cdn.example.com/alt.png"]
+              })
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        )
+      );
+
+    const result = await callUpstreamProvider({
+      model: kieModel,
+      request: {
+        model: "gpt-image-2",
+        prompt: "Create a clean icon"
+      }
+    });
+
+    expect(result.success).toBe(true);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
+      "https://api.kie.ai/api/v1/jobs/recordInfo?taskId=task_alt_id"
+    );
+  });
 });
