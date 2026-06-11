@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 
 interface AddCreditBody {
   amount?: number;
+  amountMnt?: number;
   note?: string;
 }
 
@@ -20,11 +21,13 @@ export async function POST(
     const { id } = await context.params;
     const body = await readJson<AddCreditBody>(request);
 
-    if (!body.amount) {
-      return jsonError("Credit amount is required.", 400);
+    const amount = Math.round(Number(body.amountMnt ?? body.amount ?? 0));
+
+    if (!amount || amount <= 0) {
+      return jsonError("Top-up amount is required.", 400);
     }
 
-    const transaction = await addCredit(id, body.amount, body.note ?? "Admin credit top-up");
+    const transaction = await addCredit(id, amount, body.note ?? "Admin MNT top-up");
     await writeAdminAuditLog({
       request,
       action: "api_client.add_credit",

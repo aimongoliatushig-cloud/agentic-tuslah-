@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {
   const data = await getGatewayAdminData();
-  const deductedCredits = data.usageLogs
+  const deductedMnt = data.usageLogs
     .filter((log) => log.status === "success")
     .reduce((sum, log) => sum + log.credit_cost, 0);
 
@@ -33,7 +33,7 @@ export default async function ReportsPage() {
           detail="Сүүлийн 7 өдөр"
         />
         <StatCard label="Сар" value={data.stats.monthRequests} detail="Энэ сарын нийт хүсэлт" />
-        <StatCard label="Хасагдсан кредит" value={deductedCredits} />
+        <StatCard label="Хасагдсан ₮ үлдэгдэл" value={formatMoneyMnt(deductedMnt)} />
         <StatCard label="Нийт token" value={data.stats.totalTokens} />
         <StatCard label="Billable нэгж" value={data.stats.totalBillableUnits} />
         <StatCard label="USD өртөг" value={formatMoneyUsd(data.stats.totalCostUsd)} tone="warning" />

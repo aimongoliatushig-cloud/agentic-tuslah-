@@ -90,6 +90,20 @@ export async function resolveModel(modelName: string) {
 }
 
 export function calculateCreditCost(model: ApiModel) {
+  const billingType = getBillingType(model);
+  const usdToMntRate = readNumberEnv("API_GATEWAY_USD_TO_MNT_RATE", 0);
+  const unitCount = Math.max(1, Number(model.credit_cost ?? 1));
+
+  if (billingType === "image" || billingType === "request") {
+    const unitMntPrice = Number(model.unit_price_mnt ?? 0);
+    const unitUsdPrice = Number(model.unit_price_usd ?? 0);
+    const amountMnt = unitMntPrice > 0 ? unitCount * unitMntPrice : unitCount * unitUsdPrice * usdToMntRate;
+
+    if (amountMnt > 0) {
+      return Math.max(1, Math.ceil(amountMnt));
+    }
+  }
+
   return model.credit_cost;
 }
 

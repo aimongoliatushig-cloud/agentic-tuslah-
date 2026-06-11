@@ -77,7 +77,7 @@ function estimateOutputTokens(payload: GatewayGeneratePayload) {
 
 function estimateBillableUnits(model: ApiModel) {
   if (model.billing_type === "image" || model.billing_type === "request") {
-    return 1;
+    return Math.max(1, Number(model.credit_cost ?? 1));
   }
 
   return model.credit_cost;

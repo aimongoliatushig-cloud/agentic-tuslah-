@@ -148,6 +148,24 @@ const baseModel: ApiModel = {
 describe("processGatewayRequest billing order", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it("reserves image model usage in MNT instead of raw credits", async () => {
+    const { calculateCreditCost } = await import("@/server/api-gateway/gatewayService");
+    vi.stubEnv("API_GATEWAY_USD_TO_MNT_RATE", "3569.47");
+
+    expect(
+      calculateCreditCost({
+        ...baseModel,
+        name: "gpt-image-2",
+        provider: "kie.ai",
+        provider_model: "gpt-image-2-text-to-image",
+        billing_type: "image",
+        credit_cost: 6,
+        unit_price_usd: 0.005
+      })
+    ).toBe(108);
   });
 
   it("does not call the provider for concurrent requests that fail credit reservation", async () => {

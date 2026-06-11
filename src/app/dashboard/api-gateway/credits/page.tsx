@@ -6,7 +6,7 @@ import {
   PageHeader,
   SearchBar
 } from "@/components/api-gateway";
-import { formatDate, formatNumber, getGatewayAdminData, type NamedTransaction } from "@/server/api-gateway/adminData";
+import { formatDate, formatMoneyMnt, getGatewayAdminData, type NamedTransaction } from "@/server/api-gateway/adminData";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +16,8 @@ export default async function CreditsPage() {
   return (
     <>
       <PageHeader
-        title="Кредит"
-        description="Кредит нэмэлт, хасалт, засварын түүхийг хянах хэсэг."
+        title="Төгрөгийн гүйлгээ"
+        description="Хэрэглэгчийн төгрөгийн үлдэгдлийн цэнэглэлт, зарцуулалт, засварын түүхийг хянах хэсэг."
       />
       <FilterBar>
         <SearchBar placeholder="Хэрэглэгч эсвэл тайлбараар хайх" />
@@ -44,13 +44,13 @@ export default async function CreditsPage() {
       </FilterBar>
       <InlineActions>
         <button className="action-button secondary" type="button">
-          Кредит нэмэх
+          ₮ цэнэглэх
         </button>
         <button className="action-button secondary" disabled type="button">
-          Кредит буцаах
+          ₮ буцаах
         </button>
         <button className="action-button secondary" disabled type="button">
-          Кредит засварлах
+          ₮ засварлах
         </button>
       </InlineActions>
       <DataTable<NamedTransaction>
@@ -59,7 +59,7 @@ export default async function CreditsPage() {
           { key: "date", label: "Огноо", render: (row) => formatDate(row.created_at) },
           { key: "client", label: "Хэрэглэгч", render: (row) => row.clientName },
           { key: "type", label: "Төрөл", render: (row) => (row.type === "credit" ? "Нэмэлт" : "Зарцуулалт") },
-          { key: "amount", label: "Дүн", render: (row) => formatNumber(row.amount) },
+          { key: "amount", label: "Дүн", render: (row) => formatMoneyMnt(row.amount) },
           { key: "note", label: "Тайлбар", render: (row) => row.note ?? "Тайлбаргүй" }
         ]}
       />

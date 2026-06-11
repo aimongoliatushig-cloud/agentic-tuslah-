@@ -43,6 +43,7 @@ describe("estimateRequestCostUsd", () => {
         name: "nano-banana-2-1k",
         provider: "kie.ai",
         billing_type: "image",
+        credit_cost: 6,
         unit_price_usd: 0.04
       },
       {
@@ -51,6 +52,6 @@ describe("estimateRequestCostUsd", () => {
       }
     );
 
-    expect(cost).toBe(0.04);
+    expect(cost).toBe(0.24);
   });
 });

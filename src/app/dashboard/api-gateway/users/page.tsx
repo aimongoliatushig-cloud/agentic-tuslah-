@@ -10,6 +10,7 @@ import {
 } from "@/components/api-gateway";
 import {
   formatDate,
+  formatMoneyMnt,
   getClientEmail,
   getGatewayAdminData,
   type AdminClient
@@ -55,7 +56,8 @@ export default async function UsersPage() {
           { key: "name", label: "Нэр", render: (client) => client.name },
           { key: "email", label: "Имэйл", render: (client) => getClientEmail(client) || "Тохируулаагүй" },
           { key: "key", label: "API түлхүүр", render: (client) => <code>{client.api_key_preview}</code> },
-          { key: "remaining", label: "Үлдэгдэл", render: (client) => formatPercent(client.usageRemainingPercent) },
+          { key: "balance", label: "₮ үлдэгдэл", render: (client) => formatMoneyMnt(client.credit_balance) },
+          { key: "remaining", label: "Лимит үлдэгдэл", render: (client) => formatPercent(client.usageRemainingPercent) },
           { key: "used", label: "Ашигласан", render: (client) => formatPercent(client.usageUsedPercent) },
           { key: "providerUsage", label: "Provider үлдэгдэл", render: formatProviderUsage },
           { key: "status", label: "Төлөв", render: (client) => <StatusBadge status={client.status} /> },

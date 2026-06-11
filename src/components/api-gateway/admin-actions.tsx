@@ -146,20 +146,20 @@ export function CreditModal({ client }: { client: ApiClient }) {
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    setState({ message: "Кредит нэмж байна...", loading: true });
+    setState({ message: "Төгрөгийн үлдэгдэл цэнэглэж байна...", loading: true });
     const response = await fetch(`/api/admin/api-gateway/clients/${client.id}/add-credit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        amount: Number(form.get("amount") ?? 0),
-        note: form.get("note") || "Admin UI кредит нэмэлт"
+        amountMnt: Number(form.get("amountMnt") ?? 0),
+        note: form.get("note") || "Admin UI төгрөгийн цэнэглэлт"
       })
     });
     const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
     setState({
       message: response.ok
-        ? "Кредит амжилттай нэмэгдлээ."
-        : data.error?.message ?? "Кредит нэмэхэд алдаа гарлаа.",
+        ? "Төгрөгийн үлдэгдэл амжилттай цэнэглэгдлээ."
+        : data.error?.message ?? "Үлдэгдэл цэнэглэхэд алдаа гарлаа.",
       loading: false
     });
 
@@ -171,13 +171,13 @@ export function CreditModal({ client }: { client: ApiClient }) {
   return (
     <>
       <button className="action-button secondary" type="button" onClick={() => setOpen(true)}>
-        Кредит нэмэх
+        ₮ цэнэглэх
       </button>
       {open ? (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal-panel compact" role="dialog" aria-modal="true" aria-label="Кредит нэмэх">
+          <section className="modal-panel compact" role="dialog" aria-modal="true" aria-label="Төгрөг цэнэглэх">
             <div className="modal-head">
-              <h2>Кредит нэмэх</h2>
+              <h2>Төгрөг цэнэглэх</h2>
               <button type="button" onClick={() => setOpen(false)}>
                 Хаах
               </button>
@@ -185,12 +185,12 @@ export function CreditModal({ client }: { client: ApiClient }) {
             <form className="form-grid" onSubmit={onSubmit}>
               <p className="dialog-copy">{client.name}</p>
               <label>
-                <span>Дүн</span>
-                <input min="1" name="amount" required type="number" defaultValue="10" />
+                <span>Дүн (₮)</span>
+                <input min="1" name="amountMnt" required type="number" defaultValue="10000" />
               </label>
               <label>
                 <span>Тайлбар</span>
-                <input name="note" defaultValue="Admin UI кредит нэмэлт" />
+                <input name="note" defaultValue="Admin UI төгрөгийн цэнэглэлт" />
               </label>
               <button className="primary-command" disabled={state.loading} type="submit">
                 Нэмэх

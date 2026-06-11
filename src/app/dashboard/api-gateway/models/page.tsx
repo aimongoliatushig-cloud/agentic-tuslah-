@@ -32,7 +32,7 @@ function formatModelPricing(model: ApiModel) {
     return `${formatMoneyUsd(Number(model.unit_price_usd))} / request`;
   }
 
-  return `${formatMoneyMnt(Number(model.unit_price_mnt))} / кредит`;
+  return `${formatMoneyMnt(Number(model.unit_price_mnt))} / нэгж`;
 }
 
 export default async function ModelsPage() {
@@ -42,7 +42,7 @@ export default async function ModelsPage() {
     <>
       <PageHeader
         title="Моделиуд"
-        description="Text, Image, Video, Voice model mapping, credit cost болон token/image өртгийн тохиргоо."
+        description="Text, Image, Video, Voice model mapping, нөөцлөх нэгж болон token/image өртгийн тохиргоо."
         action={<ModelFormModal />}
       />
       <FilterBar>
@@ -64,7 +64,7 @@ export default async function ModelsPage() {
           { key: "provider", label: "Provider Model ID", render: (model) => <code>{model.provider_model}</code> },
           { key: "type", label: "Төрөл", render: (model) => getModelType(model) },
           { key: "billing", label: "Billing", render: (model) => model.billing_type },
-          { key: "cost", label: "Кредит", render: (model) => `${formatNumber(model.credit_cost)} кредит` },
+          { key: "cost", label: "Нөөцлөх нэгж", render: (model) => formatNumber(model.credit_cost) },
           { key: "price", label: "Үнэ", render: (model) => formatModelPricing(model) },
           {
             key: "source",

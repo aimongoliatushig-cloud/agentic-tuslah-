@@ -25,15 +25,16 @@ export default async function ApiGatewayDashboardPage() {
     <>
       <PageHeader
         title="Хяналтын самбар"
-        description="API хэрэглэгч, кредит, token, өртөг, хүсэлт болон модель хэрэглээг нэг дор хянах самбар."
+        description="API хэрэглэгч, төгрөгийн үлдэгдэл, token, өртөг, хүсэлт болон модель хэрэглээг нэг дор хянах самбар."
       />
       <DashboardGrid columns="four">
         <StatCard label="Нийт хэрэглэгч" value={data.stats.totalClients} />
         <StatCard label="Идэвхтэй хэрэглэгч" value={data.stats.activeClients} tone="good" />
         <StatCard
-          label="Нийт $ үлдэгдэл"
+          label="Нийт $ лимит үлдэгдэл"
           value={`${formatMoneyUsd(data.stats.totalBudgetRemainingUsd)} / ${formatMoneyUsd(data.stats.totalBudgetLimitUsd)}`}
         />
+        <StatCard label="Нийт ₮ үлдэгдэл" value={formatMoneyMnt(data.stats.totalCreditBalance)} />
         <StatCard label="Өнөөдрийн хүсэлт" value={data.stats.todayRequests} />
         <StatCard label="Энэ сарын хүсэлт" value={data.stats.monthRequests} />
         <StatCard label="Нийт token" value={data.stats.totalTokens} />
@@ -51,8 +52,8 @@ export default async function ApiGatewayDashboardPage() {
         <SectionCard title="Өдрийн хүсэлтийн тоо" description="Сүүлийн 7 өдрийн хүсэлтийн хэмжээ.">
           <RevenueChart points={data.charts.dailyRequests} />
         </SectionCard>
-        <SectionCard title="Кредит зарцуулалт" description="Амжилттай хүсэлтээр хасагдсан кредит.">
-          <UsageChart title="Кредит зарцуулалт" points={data.charts.creditSpend} />
+        <SectionCard title="₮ зарцуулалт" description="Амжилттай хүсэлтээр хасагдсан төгрөгийн үлдэгдэл.">
+          <UsageChart title="₮ зарцуулалт" points={data.charts.creditSpend} />
         </SectionCard>
         <SectionCard title="₮ өртөг" description="Амжилттай хүсэлтүүдийн бодит өртгийн дүн.">
           <RevenueChart points={data.charts.revenue} />
