@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import type { ApiClient, ApiModel } from "@/server/api-gateway/types";
 
@@ -27,12 +28,20 @@ export function ConfirmDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   async function confirm() {
     setLoading(true);
-    await onConfirm?.();
-    setLoading(false);
-    setOpen(false);
+    setError("");
+
+    try {
+      await onConfirm?.();
+      setOpen(false);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Үйлдэл амжилтгүй боллоо.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -50,6 +59,7 @@ export function ConfirmDialog({
               </button>
             </div>
             <p className="dialog-copy">{description}</p>
+            {error ? <p className="form-message">{error}</p> : null}
             <div className="modal-actions">
               <button className="action-button secondary" type="button" onClick={() => setOpen(false)}>
                 Болих
@@ -129,6 +139,7 @@ export function UserFormModal() {
 }
 
 export function CreditModal({ client }: { client: ApiClient }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ActionState>(initialState);
 
@@ -144,10 +155,17 @@ export function CreditModal({ client }: { client: ApiClient }) {
         note: form.get("note") || "Admin UI кредит нэмэлт"
       })
     });
+    const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
     setState({
-      message: response.ok ? "Кредит амжилттай нэмэгдлээ." : "Кредит нэмэхэд алдаа гарлаа.",
+      message: response.ok
+        ? "Кредит амжилттай нэмэгдлээ."
+        : data.error?.message ?? "Кредит нэмэхэд алдаа гарлаа.",
       loading: false
     });
+
+    if (response.ok) {
+      router.refresh();
+    }
   }
 
   return (
@@ -377,16 +395,38 @@ export function UsageLogDrawer({
 }
 
 export function ClientRowActions({ client }: { client: ApiClient }) {
+  const router = useRouter();
+  const nextStatus = client.status === "active" ? "disabled" : "active";
+  const statusActionLabel = client.status === "active" ? "Идэвхгүй болгох" : "Идэвхжүүлэх";
+
+  async function updateStatus() {
+    const response = await fetch(`/api/admin/api-gateway/clients/${client.id}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: nextStatus })
+    });
+
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+      throw new Error(data.error?.message ?? "Client status update failed.");
+    }
+
+    router.refresh();
+  }
+
   return (
     <div className="row-actions">
       <button type="button">Харах</button>
       <button type="button">Засах</button>
+      <CreditModal client={client} />
       <ApiKeyModal client={client} />
       <ConfirmDialog
-        disabled
-        title="Идэвхгүй болгох"
-        description="Энэ үйлдэлд backend endpoint хараахан нэмэгдээгүй байна."
-        confirmLabel="Идэвхгүй болгох"
+        title={statusActionLabel}
+        description={`${client.name} хэрэглэгчийн төлөвийг ${
+          nextStatus === "active" ? "идэвхтэй" : "идэвхгүй"
+        } болгоно.`}
+        confirmLabel={statusActionLabel}
+        onConfirm={updateStatus}
       />
     </div>
   );

@@ -168,7 +168,7 @@ export function StatusBadge({ status }: { status: string }) {
         ? "Амжилттай"
         : status === "failed"
           ? "Алдаа"
-          : status === "inactive"
+          : status === "inactive" || status === "disabled"
             ? "Идэвхгүй"
             : status === "suspended"
               ? "Түр зогссон"
