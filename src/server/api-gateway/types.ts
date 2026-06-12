@@ -2,6 +2,7 @@ import type { Database, Json } from "@/lib/database.types";
 
 export type ApiClient = Database["public"]["Tables"]["api_clients"]["Row"];
 export type ApiModel = Database["public"]["Tables"]["api_models"]["Row"];
+export type ApiKey = Database["public"]["Tables"]["api_keys"]["Row"];
 export type ApiCreditTransaction =
   Database["public"]["Tables"]["api_credit_transactions"]["Row"];
 export type ApiUsageLog = Database["public"]["Tables"]["api_usage_logs"]["Row"];

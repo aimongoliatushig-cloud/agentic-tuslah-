@@ -29,6 +29,22 @@ function formatProviderUsage(client: AdminClient) {
   return `DeepSeek ${formatPercent(client.deepseekRemainingPercent)} / Kie ${formatPercent(client.kieRemainingPercent)}`;
 }
 
+function formatApiKeySummary(client: AdminClient) {
+  const activeKeys = client.apiKeys.filter((key) => key.status === "active");
+  const latestKey = activeKeys[0] ?? client.apiKeys[0];
+
+  return (
+    <div className="key-summary">
+      <code>{latestKey?.key_preview ?? client.api_key_preview}</code>
+      <small>
+        {activeKeys.length > 0
+          ? `${activeKeys.length} идэвхтэй түлхүүр`
+          : "Идэвхтэй түлхүүргүй"}
+      </small>
+    </div>
+  );
+}
+
 export default async function UsersPage() {
   const data = await getGatewayAdminData();
 
@@ -55,9 +71,9 @@ export default async function UsersPage() {
         columns={[
           { key: "name", label: "Нэр", render: (client) => client.name },
           { key: "email", label: "Имэйл", render: (client) => getClientEmail(client) || "Тохируулаагүй" },
-          { key: "key", label: "API түлхүүр", render: (client) => <code>{client.api_key_preview}</code> },
+          { key: "key", label: "API түлхүүр", render: formatApiKeySummary },
           { key: "balance", label: "₮ үлдэгдэл", render: (client) => formatMoneyMnt(client.credit_balance) },
-          { key: "remaining", label: "Лимит үлдэгдэл", render: (client) => formatPercent(client.usageRemainingPercent) },
+          { key: "remaining", label: "Хэрэглэх боломж", render: (client) => formatPercent(client.usageRemainingPercent) },
           { key: "used", label: "Ашигласан", render: (client) => formatPercent(client.usageUsedPercent) },
           { key: "providerUsage", label: "Provider үлдэгдэл", render: formatProviderUsage },
           { key: "status", label: "Төлөв", render: (client) => <StatusBadge status={client.status} /> },

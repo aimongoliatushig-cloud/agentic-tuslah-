@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import type { ApiClient, ApiModel } from "@/server/api-gateway/types";
+import type { ApiClient, ApiKey, ApiModel } from "@/server/api-gateway/types";
 
 type ActionState = {
   message: string;
@@ -17,18 +17,26 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
+  triggerLabel,
+  confirmationText,
   disabled,
+  variant = "danger",
   onConfirm
 }: {
   title: string;
   description: string;
   confirmLabel: string;
+  triggerLabel?: string;
+  confirmationText?: string;
   disabled?: boolean;
+  variant?: "secondary" | "warning" | "danger";
   onConfirm?: () => Promise<void> | void;
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [typedValue, setTypedValue] = useState("");
+  const canConfirm = !confirmationText || typedValue === confirmationText;
 
   async function confirm() {
     setLoading(true);
@@ -37,6 +45,7 @@ export function ConfirmDialog({
     try {
       await onConfirm?.();
       setOpen(false);
+      setTypedValue("");
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Үйлдэл амжилтгүй боллоо.");
     } finally {
@@ -46,8 +55,8 @@ export function ConfirmDialog({
 
   return (
     <>
-      <button className="action-button danger" disabled={disabled} onClick={() => setOpen(true)} type="button">
-        {confirmLabel}
+      <button className={`action-button ${variant}`} disabled={disabled} onClick={() => setOpen(true)} type="button">
+        {triggerLabel ?? confirmLabel}
       </button>
       {open ? (
         <div className="modal-backdrop" role="presentation">
@@ -59,13 +68,23 @@ export function ConfirmDialog({
               </button>
             </div>
             <p className="dialog-copy">{description}</p>
+            {confirmationText ? (
+              <label className="confirm-text-field">
+                <span>Баталгаажуулахын тулд “{confirmationText}” гэж бичнэ үү</span>
+                <input
+                  value={typedValue}
+                  onChange={(event) => setTypedValue(event.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            ) : null}
             {error ? <p className="form-message">{error}</p> : null}
             <div className="modal-actions">
               <button className="action-button secondary" type="button" onClick={() => setOpen(false)}>
                 Болих
               </button>
-              <button className="action-button danger" disabled={loading} type="button" onClick={confirm}>
-                Батлах
+              <button className="action-button danger" disabled={loading || !canConfirm} type="button" onClick={confirm}>
+                {confirmLabel}
               </button>
             </div>
           </section>
@@ -204,7 +223,10 @@ export function CreditModal({ client }: { client: ApiClient }) {
   );
 }
 
-export function ApiKeyModal({ client }: { client: ApiClient }) {
+type ClientWithKeys = ApiClient & { apiKeys?: ApiKey[] };
+
+export function ApiKeyModal({ client }: { client: ClientWithKeys }) {
+  const router = useRouter();
   const [state, setState] = useState<ActionState>(initialState);
 
   async function regenerate() {
@@ -220,7 +242,30 @@ export function ApiKeyModal({ client }: { client: ApiClient }) {
       apiKey: data.apiKey,
       loading: false
     });
+
+    if (response.ok) {
+      router.refresh();
+    }
   }
+
+  async function deleteKey(key: ApiKey) {
+    const response = await fetch(`/api/admin/api-gateway/clients/${client.id}/keys/${key.id}`, {
+      method: "DELETE"
+    });
+
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+      throw new Error(data.error?.message ?? "API түлхүүр устгахад алдаа гарлаа.");
+    }
+
+    setState({
+      message: `${key.key_preview} түлхүүр устгагдлаа. Хэрэглээний бүртгэл болон төлбөрийн түүх хэвээр үлдэнэ.`,
+      loading: false
+    });
+    router.refresh();
+  }
+
+  const apiKeys = Array.isArray(client.apiKeys) ? client.apiKeys : [];
 
   return (
     <div className="stacked-action">
@@ -229,6 +274,29 @@ export function ApiKeyModal({ client }: { client: ApiClient }) {
       </button>
       {state.message ? <small>{state.message}</small> : null}
       {state.apiKey ? <code className="api-key-once inline">{state.apiKey}</code> : null}
+      {apiKeys.length > 0 ? (
+        <div className="key-action-list">
+          {apiKeys.map((key) => (
+            <div className="key-action-row" key={key.id}>
+              <span>
+                <code>{key.key_preview}</code>
+                <small>{key.status === "active" ? "Идэвхтэй" : key.status === "revoked" ? "Устсан" : "Түр зогссон"}</small>
+              </span>
+              <ConfirmDialog
+                title="API түлхүүр бүр мөсөн устгах"
+                description={`${key.key_preview} API түлхүүрийг бүр мөсөн устгах гэж байна. Энэ үйлдлийг буцаах боломжгүй. Хэрэглээний бүртгэл болон төлбөрийн түүх устахгүй.`}
+                triggerLabel="Устгах"
+                confirmLabel="Бүр мөсөн устгах"
+                confirmationText="УСТГАХ"
+                disabled={key.status !== "active"}
+                onConfirm={() => deleteKey(key)}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <small>Идэвхтэй API түлхүүрийн жагсаалт хараахан олдсонгүй.</small>
+      )}
     </div>
   );
 }
@@ -394,7 +462,7 @@ export function UsageLogDrawer({
   );
 }
 
-export function ClientRowActions({ client }: { client: ApiClient }) {
+export function ClientRowActions({ client }: { client: ClientWithKeys }) {
   const router = useRouter();
   const nextStatus = client.status === "active" ? "disabled" : "active";
   const statusActionLabel = client.status === "active" ? "Идэвхгүй болгох" : "Идэвхжүүлэх";
@@ -426,6 +494,7 @@ export function ClientRowActions({ client }: { client: ApiClient }) {
           nextStatus === "active" ? "идэвхтэй" : "идэвхгүй"
         } болгоно.`}
         confirmLabel={statusActionLabel}
+        variant="warning"
         onConfirm={updateStatus}
       />
     </div>

@@ -1,5 +1,5 @@
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
-import type { ApiClient, ApiModel, ApiUsageLog } from "@/server/api-gateway/types";
+import type { ApiClient, ApiKey, ApiModel, ApiUsageLog } from "@/server/api-gateway/types";
 import type { Database, Json } from "@/lib/database.types";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +18,7 @@ export interface NamedUsageLog extends ApiUsageLog {
 }
 
 export interface AdminClient extends ApiClient {
+  apiKeys: ApiKey[];
   totalBudgetUsd: number;
   spentUsd: number;
   remainingUsd: number;
@@ -238,7 +239,14 @@ function buildHeatmap(logs: ApiUsageLog[]) {
 
 export async function getGatewayAdminData(): Promise<GatewayAdminData> {
   const supabase = getSupabaseAdminClient();
-  const [{ data: clients }, { data: models }, { data: transactions }, { data: usageLogs }, { data: budgets }] =
+  const [
+    { data: clients },
+    { data: models },
+    { data: transactions },
+    { data: usageLogs },
+    { data: budgets },
+    { data: apiKeys }
+  ] =
     await Promise.all([
       supabase.from("api_clients").select("*").order("created_at", { ascending: false }),
       supabase.from("api_models").select("*").order("created_at", { ascending: false }),
@@ -251,7 +259,11 @@ export async function getGatewayAdminData(): Promise<GatewayAdminData> {
       supabase
         .from("api_client_budget_limits")
         .select("*")
-        .eq("status", "active")
+        .eq("status", "active"),
+      supabase
+        .from("api_keys")
+        .select("*")
+        .order("created_at", { ascending: false })
     ]);
 
   const rawClients = clients ?? [];
@@ -259,9 +271,11 @@ export async function getGatewayAdminData(): Promise<GatewayAdminData> {
   const safeTransactions = transactions ?? [];
   const safeUsageLogs = usageLogs ?? [];
   const safeBudgets = budgets ?? [];
+  const safeApiKeys = apiKeys ?? [];
   const successfulLogs = safeUsageLogs.filter((log) => log.status === "success");
   const rawModelMap = toMap(safeModels);
   const safeClients = rawClients.map((client) => {
+    const clientApiKeys = safeApiKeys.filter((key) => key.client_id === client.id);
     const clientBudgets = safeBudgets.filter((budget) => budget.client_id === client.id);
     const totalBudgetUsd =
       Number(
@@ -299,6 +313,7 @@ export async function getGatewayAdminData(): Promise<GatewayAdminData> {
 
     return {
       ...client,
+      apiKeys: clientApiKeys,
       totalBudgetUsd,
       spentUsd,
       remainingUsd: Math.max(0, totalBudgetUsd - spentUsd),
