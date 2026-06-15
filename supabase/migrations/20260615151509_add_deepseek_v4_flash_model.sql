@@ -1,0 +1,51 @@
+insert into public.api_models (
+  name,
+  provider,
+  provider_model,
+  credit_cost,
+  billing_type,
+  input_cache_hit_1m_token_price_usd,
+  input_cache_miss_1m_token_price_usd,
+  output_1m_token_price_usd,
+  input_1k_token_price_mnt,
+  output_1k_token_price_mnt,
+  unit_price_usd,
+  status,
+  config,
+  pricing_source_url,
+  pricing_checked_at
+)
+values (
+  'deepseek-v4-flash',
+  'deepseek',
+  'deepseek-v4-flash',
+  1,
+  'token',
+  0.0028,
+  0.14,
+  0.28,
+  0,
+  0,
+  0,
+  'active',
+  '{"type":"Text","family":"DeepSeek V4","variant":"Flash","context_window":"1M"}',
+  'https://api-docs.deepseek.com/news/news260424',
+  now()
+)
+on conflict (name) do update
+set
+  provider = excluded.provider,
+  provider_model = excluded.provider_model,
+  credit_cost = excluded.credit_cost,
+  billing_type = excluded.billing_type,
+  input_cache_hit_1m_token_price_usd = excluded.input_cache_hit_1m_token_price_usd,
+  input_cache_miss_1m_token_price_usd = excluded.input_cache_miss_1m_token_price_usd,
+  output_1m_token_price_usd = excluded.output_1m_token_price_usd,
+  input_1k_token_price_mnt = excluded.input_1k_token_price_mnt,
+  output_1k_token_price_mnt = excluded.output_1k_token_price_mnt,
+  unit_price_usd = excluded.unit_price_usd,
+  status = excluded.status,
+  config = excluded.config,
+  pricing_source_url = excluded.pricing_source_url,
+  pricing_checked_at = excluded.pricing_checked_at,
+  updated_at = now();
