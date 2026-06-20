@@ -5,18 +5,14 @@ import { processGatewayRequest } from "@/server/api-gateway/gatewayService";
 import type { GatewayGeneratePayload } from "@/server/api-gateway/types";
 import { checkRateLimit } from "@/server/api-gateway/rateLimitService";
 import { validateGatewayGeneratePayload } from "@/server/api-gateway/validation";
+import type { Json } from "@/lib/database.types";
 
 export const runtime = "nodejs";
 
 interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content:
-    | string
-    | Array<{
-        type?: string;
-        text?: string;
-        content?: string;
-      }>;
+  content?: unknown;
+  [key: string]: unknown;
 }
 
 interface ChatCompletionsBody {
@@ -36,17 +32,6 @@ function readBearerToken(request: Request) {
   return authorization.slice("Bearer ".length).trim();
 }
 
-function contentToText(content: ChatMessage["content"]) {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  return content
-    .map((part) => part.text ?? part.content ?? "")
-    .filter(Boolean)
-    .join("\n");
-}
-
 function buildGatewayPayload(body: ChatCompletionsBody): GatewayGeneratePayload {
   const { model, messages, ...parameters } = body;
   delete parameters.stream;
@@ -55,11 +40,8 @@ function buildGatewayPayload(body: ChatCompletionsBody): GatewayGeneratePayload 
   return {
     model: model ?? "deepseek-chat",
     input: {
-      messages: (messages ?? []).map((message) => ({
-        role: message.role,
-        content: contentToText(message.content)
-      }))
-    },
+      messages: messages ?? []
+    } as Json,
     parameters
   };
 }

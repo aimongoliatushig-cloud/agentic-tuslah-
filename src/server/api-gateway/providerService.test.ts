@@ -110,6 +110,93 @@ describe("callUpstreamProvider", () => {
     ).toBe(123);
   });
 
+  it("preserves OpenAI-compatible tool definitions and tool result messages", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("UPSTREAM_AI_API_KEY", "sk-valid-ascii-key");
+    vi.stubEnv("UPSTREAM_AI_BASE_URL", "https://api.deepseek.com");
+    vi.stubEnv("UPSTREAM_AI_REQUEST_MODE", "openai-compatible");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl-tool-test",
+          choices: [{ message: { content: "Found three links." } }],
+          usage: {
+            prompt_tokens: 123,
+            completion_tokens: 45,
+            total_tokens: 168
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      )
+    );
+
+    await callUpstreamProvider({
+      model,
+      request: {
+        model: "deepseek-chat",
+        input: {
+          messages: [
+            { role: "user", content: "Search unegui.mn" },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "web_search",
+                    arguments: "{\"query\":\"site:unegui.mn gaming chair\"}"
+                  }
+                }
+              ]
+            },
+            {
+              role: "tool",
+              tool_call_id: "call_1",
+              name: "web_search",
+              content: "[{\"title\":\"Gaming chair\",\"url\":\"https://example.com\"}]"
+            }
+          ]
+        },
+        parameters: {
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "web_search",
+                description: "Search the web",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    query: { type: "string" }
+                  },
+                  required: ["query"]
+                }
+              }
+            }
+          ],
+          tool_choice: "auto"
+        }
+      }
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+
+    expect(body.tools?.[0]?.function?.name).toBe("web_search");
+    expect(body.tool_choice).toBe("auto");
+    expect(body.messages[1].tool_calls[0].function.name).toBe("web_search");
+    expect(body.messages[1].content).toBeNull();
+    expect(body.messages[2].role).toBe("tool");
+    expect(body.messages[2].tool_call_id).toBe("call_1");
+    expect(body.messages[2].name).toBe("web_search");
+  });
+
   it("fails Kie GPT Image 2 without calling fetch when Kie API key is missing", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("KIE_AI_API_KEY", "");

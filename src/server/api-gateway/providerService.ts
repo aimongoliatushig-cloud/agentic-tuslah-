@@ -2,9 +2,8 @@ import type { ProviderPayload, ProviderResult } from "@/server/api-gateway/types
 import { isProduction, readIntEnv, readJsonEnv } from "@/server/env";
 
 type RequestMode = "generic" | "openai-compatible";
-type OpenAiMessage = {
+type OpenAiMessage = Record<string, unknown> & {
   role: string;
-  content: unknown;
 };
 type KieTaskState = "waiting" | "queuing" | "generating" | "success" | "fail" | "unknown";
 
@@ -84,10 +83,15 @@ function getOpenAiMessages(payload: ProviderPayload) {
   }
 
   const rawMessages = input.messages as unknown[];
-  const messages = rawMessages.filter(isRecord).map((message) => ({
-    role: typeof message.role === "string" ? message.role : "user",
-    content: typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "")
-  }));
+  const messages = rawMessages.filter(isRecord).map((message) => {
+    const role = typeof message.role === "string" ? message.role : "user";
+
+    return {
+      ...message,
+      role,
+      content: "content" in message ? message.content : ""
+    };
+  });
 
   return messages.length > 0 ? (messages as OpenAiMessage[]) : null;
 }
