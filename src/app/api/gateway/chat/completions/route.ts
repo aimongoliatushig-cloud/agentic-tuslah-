@@ -1,11 +1,13 @@
-import crypto from "node:crypto";
-
 import { jsonError, jsonOk, readJson } from "@/server/http";
 import { processGatewayRequest } from "@/server/api-gateway/gatewayService";
 import type { GatewayGeneratePayload } from "@/server/api-gateway/types";
 import { checkRateLimit } from "@/server/api-gateway/rateLimitService";
 import { validateGatewayGeneratePayload } from "@/server/api-gateway/validation";
 import type { Json } from "@/lib/database.types";
+import {
+  handleOpenAiCompatibleChatCompletion,
+  isOpenAiCompatibleRequestMode
+} from "@/server/api-gateway/openAiProxyService";
 
 export const runtime = "nodejs";
 
@@ -38,7 +40,7 @@ function buildGatewayPayload(body: ChatCompletionsBody): GatewayGeneratePayload 
   delete parameters.stream_options;
 
   return {
-    model: model ?? "deepseek-chat",
+    model: model ?? "deepseek-v4-flash",
     input: {
       messages: messages ?? []
     } as Json,
@@ -86,72 +88,12 @@ function toOpenAiCompatibleResponse(result: Awaited<ReturnType<typeof processGat
   return toOpenAiCompatibleFallback(result);
 }
 
-function createStreamResponse(completion: unknown) {
-  const response =
-    completion && typeof completion === "object" && !Array.isArray(completion)
-      ? (completion as {
-          id?: string;
-          model?: string;
-          choices?: Array<{
-            message?: {
-              content?: unknown;
-            };
-          }>;
-        })
-      : null;
-  const id = response?.id ?? `chatcmpl-${crypto.randomUUID()}`;
-  const created = Math.floor(Date.now() / 1000);
-  const model = response?.model ?? "gateway";
-  const content = response?.choices?.[0]?.message?.content;
-  const encoded = new TextEncoder().encode(
-    [
-      `data: ${JSON.stringify({
-        id,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [
-          {
-            index: 0,
-            delta: {
-              role: "assistant",
-              content: typeof content === "string" ? content : JSON.stringify(content ?? "")
-            },
-            finish_reason: null
-          }
-        ]
-      })}`,
-      "",
-      `data: ${JSON.stringify({
-        id,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [
-          {
-            index: 0,
-            delta: {},
-            finish_reason: "stop"
-          }
-        ]
-      })}`,
-      "",
-      "data: [DONE]",
-      ""
-    ].join("\n")
-  );
-
-  return new Response(encoded, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive"
-    }
-  });
-}
-
 export async function POST(request: Request) {
   try {
+    if (isOpenAiCompatibleRequestMode()) {
+      return handleOpenAiCompatibleChatCompletion(request);
+    }
+
     const apiKey = readBearerToken(request);
 
     if (!apiKey) {
@@ -173,6 +115,14 @@ export async function POST(request: Request) {
 
     const body = await readJson<ChatCompletionsBody>(request);
 
+    if (body.stream) {
+      return jsonError(
+        "Streaming requires UPSTREAM_AI_REQUEST_MODE=openai-compatible.",
+        400,
+        "streaming_requires_openai_mode"
+      );
+    }
+
     if (!body.model) {
       return jsonError("Request body must include model.", 400, "invalid_request");
     }
@@ -193,10 +143,6 @@ export async function POST(request: Request) {
       payload: validation.payload
     });
     const completion = toOpenAiCompatibleResponse(result);
-
-    if (body.stream) {
-      return createStreamResponse(completion);
-    }
 
     return jsonOk(completion);
   } catch (error) {

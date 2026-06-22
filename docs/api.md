@@ -10,7 +10,7 @@ Content-Type: application/json
 
 ```json
 {
-  "model": "deepseek-chat",
+  "model": "deepseek-v4-flash",
   "prompt": "Hello",
   "parameters": {
     "max_tokens": 200,
