@@ -11,7 +11,6 @@ import {
 } from "@/components/api-gateway";
 import {
   formatMoneyMnt,
-  formatMoneyUsd,
   formatNumber,
   getGatewayAdminData
 } from "@/server/api-gateway/adminData";
@@ -25,35 +24,36 @@ export default async function ApiGatewayDashboardPage() {
     <>
       <PageHeader
         title="Хяналтын самбар"
-        description="API хэрэглэгч, төгрөгийн үлдэгдэл, token, өртөг, хүсэлт болон модель хэрэглээг нэг дор хянах самбар."
+        description="Хамгийн чухал үзүүлэлтүүдийг нэг дороос. Дэлгэрэнгүйг доорх хэсгүүдээс үзнэ үү."
       />
+
+      <p className="section-caption">Гол үзүүлэлт</p>
       <DashboardGrid columns="four">
-        <StatCard label="Нийт хэрэглэгч" value={data.stats.totalClients} />
-        <StatCard label="Идэвхтэй хэрэглэгч" value={data.stats.activeClients} tone="good" />
-        <StatCard
-          label="Нийт $ лимит үлдэгдэл"
-          value={`${formatMoneyUsd(data.stats.totalBudgetRemainingUsd)} / ${formatMoneyUsd(data.stats.totalBudgetLimitUsd)}`}
-        />
-        <StatCard label="Нийт ₮ үлдэгдэл" value={formatMoneyMnt(data.stats.totalCreditBalance)} />
-        <StatCard label="Өнөөдрийн хүсэлт" value={data.stats.todayRequests} />
-        <StatCard label="Энэ сарын хүсэлт" value={data.stats.monthRequests} />
+        <StatCard label="Идэвхтэй хэрэглэгч" value={data.stats.activeClients} detail={`Нийт ${formatNumber(data.stats.totalClients)}`} tone="good" />
+        <StatCard label="Нийт ₮ үлдэгдэл" value={formatMoneyMnt(data.stats.totalCreditBalance)} detail="Бүх хэрэглэгчийн баланс" />
+        <StatCard label="Өнөөдрийн хүсэлт" value={data.stats.todayRequests} detail={`Энэ сар ${formatNumber(data.stats.monthRequests)}`} />
+        <StatCard label="Нийт өртөг" value={formatMoneyMnt(data.stats.totalCostMnt)} detail="Амжилттай хүсэлтүүд" tone="warning" />
+      </DashboardGrid>
+
+      <p className="section-caption">Хэрэглээ ба орлого</p>
+      <DashboardGrid columns="four">
         <StatCard label="Нийт token" value={data.stats.totalTokens} />
         <StatCard label="Billable нэгж" value={formatNumber(data.stats.totalBillableUnits)} />
-        <StatCard label="USD өртөг" value={formatMoneyUsd(data.stats.totalCostUsd)} tone="warning" />
-        <StatCard label="Өртөг" value={formatMoneyMnt(data.stats.totalCostMnt)} tone="warning" />
-        <StatCard label="Орлого (тооцоолсон)" value={formatMoneyMnt(data.stats.estimatedRevenue)} />
-        <StatCard label="Топ хэрэглэгч" value={data.stats.topClient} />
-        <StatCard label="Топ модель" value={data.stats.topModel} />
+        <StatCard label="Орлого (тооцоолсон)" value={formatMoneyMnt(data.stats.estimatedRevenue)} tone="good" />
+        <StatCard
+          label="Лимит үлдэгдэл"
+          value={formatMoneyMnt(data.stats.totalBudgetRemainingMnt)}
+          detail={`Нийт лимит ${formatMoneyMnt(data.stats.totalBudgetLimitMnt)}`}
+        />
       </DashboardGrid>
+
+      <p className="section-caption">Хандлага</p>
       <DashboardGrid columns="two">
         <SectionCard title="Хэрэглээний өсөлт" description="Сүүлийн 14 өдрийн хүсэлтийн хандлага.">
           <UsageChart title="Хэрэглээний өсөлт" points={data.charts.usageGrowth} />
         </SectionCard>
         <SectionCard title="Өдрийн хүсэлтийн тоо" description="Сүүлийн 7 өдрийн хүсэлтийн хэмжээ.">
           <RevenueChart points={data.charts.dailyRequests} />
-        </SectionCard>
-        <SectionCard title="₮ зарцуулалт" description="Амжилттай хүсэлтээр хасагдсан төгрөгийн үлдэгдэл.">
-          <UsageChart title="₮ зарцуулалт" points={data.charts.creditSpend} />
         </SectionCard>
         <SectionCard title="₮ өртөг" description="Амжилттай хүсэлтүүдийн бодит өртгийн дүн.">
           <RevenueChart points={data.charts.revenue} />
@@ -62,6 +62,8 @@ export default async function ApiGatewayDashboardPage() {
           <ModelUsageChart points={data.charts.modelUsage} />
         </SectionCard>
       </DashboardGrid>
+
+      <p className="section-caption">Тэргүүлэгчид</p>
       <DashboardGrid columns="two">
         <TopUsersWidget rows={data.leaders.topCustomers} />
         <TopModelsWidget rows={data.leaders.topModels} />

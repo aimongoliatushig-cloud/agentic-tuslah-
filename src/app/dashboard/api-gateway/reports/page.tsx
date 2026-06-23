@@ -9,7 +9,7 @@ import {
   UsageChart,
   UsageHeatmap
 } from "@/components/api-gateway";
-import { formatMoneyMnt, formatMoneyUsd, getGatewayAdminData } from "@/server/api-gateway/adminData";
+import { formatMoneyMnt, getGatewayAdminData } from "@/server/api-gateway/adminData";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +36,6 @@ export default async function ReportsPage() {
         <StatCard label="Хасагдсан ₮ үлдэгдэл" value={formatMoneyMnt(deductedMnt)} />
         <StatCard label="Нийт token" value={data.stats.totalTokens} />
         <StatCard label="Billable нэгж" value={data.stats.totalBillableUnits} />
-        <StatCard label="USD өртөг" value={formatMoneyUsd(data.stats.totalCostUsd)} tone="warning" />
         <StatCard label="Нийт өртөг" value={formatMoneyMnt(data.stats.totalCostMnt)} tone="warning" />
         <StatCard label="Орлого" value={formatMoneyMnt(data.stats.estimatedRevenue)} tone="good" />
       </DashboardGrid>

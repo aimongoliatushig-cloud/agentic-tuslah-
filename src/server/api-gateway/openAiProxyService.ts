@@ -233,6 +233,72 @@ function providerResultFromData(data: unknown, success: boolean, error?: string)
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+type StreamUsage = ReturnType<typeof extractUsage>;
+
+function hasUsageTokens(usage: StreamUsage) {
+  return (
+    usage.totalTokens !== undefined ||
+    usage.inputTokens !== undefined ||
+    usage.outputTokens !== undefined
+  );
+}
+
+/**
+ * Passes an SSE stream through unchanged while parsing each `data:` chunk for an
+ * OpenAI-style `usage` object. The final chunk (emitted when stream_options.include_usage
+ * is true) carries the token counts, which we hand to `onComplete` once the stream ends.
+ */
+function createUsageCapturingStream(onComplete: (usage: StreamUsage) => Promise<void> | void) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let usage: StreamUsage = {};
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+      buffer += decoder.decode(chunk, { stream: true });
+      const segments = buffer.split("\n");
+      buffer = segments.pop() ?? "";
+
+      for (const segment of segments) {
+        const line = segment.trim();
+
+        if (!line.startsWith("data:")) {
+          continue;
+        }
+
+        const payload = line.slice("data:".length).trim();
+
+        if (!payload || payload === "[DONE]") {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(payload) as unknown;
+          const chunkUsage = extractUsage(parsed);
+
+          if (hasUsageTokens(chunkUsage)) {
+            usage = chunkUsage;
+          }
+        } catch {
+          // Ignore keep-alive comments and partial/non-JSON lines.
+        }
+      }
+    },
+    async flush() {
+      try {
+        await onComplete(usage);
+      } catch (error) {
+        console.error("[api-gateway] failed to log streaming usage", error);
+      }
+    }
+  });
+}
+
 async function refundAndLogFailure(params: {
   client: ApiClient;
   model: ApiModel;
@@ -401,6 +467,15 @@ export async function handleOpenAiCompatibleChatCompletion(request: Request): Pr
   }
 
   const upstreamBody = buildUpstreamBody(body, model);
+
+  if (body.stream === true) {
+    // Ask the provider to append a final chunk with token usage so we can bill the request.
+    upstreamBody.stream_options = {
+      ...(isRecord(upstreamBody.stream_options) ? upstreamBody.stream_options : {}),
+      include_usage: true
+    };
+  }
+
   const upstream = await fetchWithTimeout(getUpstreamChatCompletionsUrl(), {
     method: "POST",
     headers: getUpstreamHeaders(),
@@ -416,31 +491,63 @@ export async function handleOpenAiCompatibleChatCompletion(request: Request): Pr
       return NextResponse.json(data, { status: upstream.status });
     }
 
-    await logUsage({
-      client,
-      model,
-      requestId,
-      status: "success",
-      creditCost,
-      providerResult: {
-        success: true,
-        data: {
-          stream: true,
-          upstreamStatus: upstream.status,
-          balanceAfter: transaction.balance_after
-        }
-      },
-      latencyMs: Date.now() - startedAt
-    });
+    const streamHeaders = {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive"
+    };
 
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive"
-      }
-    });
+    if (!upstream.body) {
+      await logUsage({
+        client,
+        model,
+        requestId,
+        status: "success",
+        creditCost,
+        providerResult: {
+          success: true,
+          data: {
+            stream: true,
+            upstreamStatus: upstream.status,
+            balanceAfter: transaction.balance_after
+          }
+        },
+        latencyMs: Date.now() - startedAt
+      });
+
+      return new Response(null, { status: upstream.status, headers: streamHeaders });
+    }
+
+    const usageStream = upstream.body.pipeThrough(
+      createUsageCapturingStream(async (usage) => {
+        await logUsage({
+          client,
+          model,
+          requestId,
+          status: "success",
+          creditCost,
+          providerResult: {
+            success: true,
+            ...usage,
+            data: {
+              stream: true,
+              upstreamStatus: upstream.status,
+              balanceAfter: transaction.balance_after,
+              usage: hasUsageTokens(usage)
+                ? {
+                    prompt_tokens: usage.inputTokens ?? null,
+                    completion_tokens: usage.outputTokens ?? null,
+                    total_tokens: usage.totalTokens ?? null
+                  }
+                : null
+            }
+          },
+          latencyMs: Date.now() - startedAt
+        });
+      })
+    );
+
+    return new Response(usageStream, { status: upstream.status, headers: streamHeaders });
   }
 
   const data = await parseResponse(upstream);

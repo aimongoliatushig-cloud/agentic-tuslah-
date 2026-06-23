@@ -1,12 +1,4 @@
-import Link from "next/link";
-
-const menuItems = [
-  { href: "/dashboard/api-gateway", label: "Хяналтын самбар" },
-  { href: "/dashboard/api-gateway/users", label: "Хэрэглэгчид" },
-  { href: "/dashboard/api-gateway/models", label: "Моделиуд" },
-  { href: "/dashboard/api-gateway/usage", label: "Хэрэглээний бүртгэл" },
-  { href: "/dashboard/api-gateway/reports", label: "Тайлан" }
-];
+import { GatewaySubnav } from "@/components/api-gateway/gateway-subnav";
 
 export default function ApiGatewayLayout({
   children
@@ -21,13 +13,7 @@ export default function ApiGatewayLayout({
           <h1>AI Gateway удирдлага</h1>
         </div>
       </div>
-      <nav className="gateway-subnav" aria-label="API Gateway navigation">
-        {menuItems.map((item) => (
-          <Link href={item.href} key={item.href}>
-            {item.label}
-          </Link>
-        ))}
-      </nav>
+      <GatewaySubnav />
       {children}
     </div>
   );

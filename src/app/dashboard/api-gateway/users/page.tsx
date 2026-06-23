@@ -1,13 +1,15 @@
 import {
-  ClientRowActions,
+  DashboardGrid,
   DataTable,
   FilterBar,
   FilterField,
   PageHeader,
   SearchBar,
+  StatCard,
   StatusBadge,
   UserFormModal
 } from "@/components/api-gateway";
+import { UserRowActions } from "@/components/api-gateway/user-row-actions";
 import {
   formatDate,
   formatMoneyMnt,
@@ -26,7 +28,12 @@ function formatPercent(value: number) {
 }
 
 function formatProviderUsage(client: AdminClient) {
-  return `DeepSeek ${formatPercent(client.deepseekRemainingPercent)} / Kie ${formatPercent(client.kieRemainingPercent)}`;
+  return (
+    <div className="provider-usage-stack">
+      <span>DeepSeek {formatPercent(client.deepseekRemainingPercent)}</span>
+      <span>Kie {formatPercent(client.kieRemainingPercent)}</span>
+    </div>
+  );
 }
 
 function formatApiKeySummary(client: AdminClient) {
@@ -45,16 +52,68 @@ function formatApiKeySummary(client: AdminClient) {
   );
 }
 
+function ClientIdentity({ client }: { client: AdminClient }) {
+  const email = getClientEmail(client);
+
+  return (
+    <div className="client-identity">
+      <strong>{client.name}</strong>
+      <span>{email || "Имэйл тохируулаагүй"}</span>
+      <small>Үүсгэсэн: {formatDate(client.created_at)}</small>
+    </div>
+  );
+}
+
+function UsageMeter({ client }: { client: AdminClient }) {
+  const usedPercent = Math.min(100, Math.max(0, client.usageUsedPercent));
+
+  return (
+    <div className="usage-meter" aria-label={`Ашигласан ${formatPercent(client.usageUsedPercent)}`}>
+      <div className="usage-meter-head">
+        <strong>{formatPercent(client.usageRemainingPercent)}</strong>
+        <span>үлдсэн</span>
+      </div>
+      <span className="usage-track">
+        <span style={{ width: `${usedPercent}%` }} />
+      </span>
+      <small>{formatPercent(client.usageUsedPercent)} ашигласан</small>
+    </div>
+  );
+}
+
 export default async function UsersPage() {
   const data = await getGatewayAdminData();
+  const activeClients = data.clients.filter((client) => client.status === "active").length;
+  const activeApiKeys = data.clients.reduce(
+    (count, client) => count + client.apiKeys.filter((key) => key.status === "active").length,
+    0
+  );
+  const lowRemainingClients = data.clients.filter(
+    (client) => client.totalBudgetUsd > 0 && client.usageRemainingPercent <= 10
+  ).length;
 
   return (
     <>
       <PageHeader
         title="Хэрэглэгчид"
-        description="API хэрэглэгчийн түлхүүр, хэрэглээний үлдэгдэл хувь болон provider тус бүрийн лимитийг хянах."
+        description="Клиент бүрийн түлхүүр, төгрөгийн үлдэгдэл, төсвийн ашиглалт, provider лимитийг нэг дор хянана."
         action={<UserFormModal />}
       />
+      <DashboardGrid columns="four">
+        <StatCard label="Нийт хэрэглэгч" value={data.clients.length} detail={`${activeClients} идэвхтэй`} />
+        <StatCard label="Идэвхтэй API түлхүүр" value={activeApiKeys} detail="Хүсэлт авах боломжтой" />
+        <StatCard
+          label="Нийт төгрөгийн үлдэгдэл"
+          value={formatMoneyMnt(data.stats.totalCreditBalance)}
+          detail="Бүх хэрэглэгчийн баланс"
+        />
+        <StatCard
+          label="Анхаарах лимит"
+          value={lowRemainingClients}
+          detail="10%-аас доош үлдэгдэлтэй"
+          tone={lowRemainingClients > 0 ? "warning" : "good"}
+        />
+      </DashboardGrid>
       <FilterBar>
         <SearchBar placeholder="Нэр, имэйл, API түлхүүрээр хайх" />
         <FilterField label="Төлөв">
@@ -69,16 +128,18 @@ export default async function UsersPage() {
       <DataTable<AdminClient>
         rows={data.clients}
         columns={[
-          { key: "name", label: "Нэр", render: (client) => client.name },
-          { key: "email", label: "Имэйл", render: (client) => getClientEmail(client) || "Тохируулаагүй" },
-          { key: "key", label: "API түлхүүр", render: formatApiKeySummary },
-          { key: "balance", label: "₮ үлдэгдэл", render: (client) => formatMoneyMnt(client.credit_balance) },
-          { key: "remaining", label: "Хэрэглэх боломж", render: (client) => formatPercent(client.usageRemainingPercent) },
-          { key: "used", label: "Ашигласан", render: (client) => formatPercent(client.usageUsedPercent) },
-          { key: "providerUsage", label: "Provider үлдэгдэл", render: formatProviderUsage },
+          { key: "client", label: "Хэрэглэгч", render: (client) => <ClientIdentity client={client} />, className: "client-col" },
+          { key: "key", label: "API түлхүүр", render: formatApiKeySummary, className: "key-col" },
+          {
+            key: "balance",
+            label: "Төгрөгийн үлдэгдэл",
+            render: (client) => <strong className="money-value">{formatMoneyMnt(client.credit_balance)}</strong>,
+            className: "money-col"
+          },
+          { key: "remaining", label: "Төсвийн ашиглалт", render: (client) => <UsageMeter client={client} />, className: "usage-col" },
+          { key: "providerUsage", label: "Provider", render: formatProviderUsage },
           { key: "status", label: "Төлөв", render: (client) => <StatusBadge status={client.status} /> },
-          { key: "created", label: "Үүсгэсэн огноо", render: (client) => formatDate(client.created_at) },
-          { key: "actions", label: "Үйлдэл", render: (client) => <ClientRowActions client={client} /> }
+          { key: "actions", label: "Удирдах", render: (client) => <UserRowActions client={client} />, className: "actions-col" }
         ]}
       />
     </>

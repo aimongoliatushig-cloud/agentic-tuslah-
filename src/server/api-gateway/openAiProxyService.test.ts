@@ -211,6 +211,50 @@ describe("OpenAI-compatible chat proxy", () => {
     await expect(response.text()).resolves.toContain("data: [DONE]");
   });
 
+  it("captures token usage from the final streaming chunk and logs it", async () => {
+    const streamBody = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"));
+        controller.enqueue(
+          encoder.encode(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n"
+          )
+        );
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      }
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(streamBody, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      })
+    );
+
+    const response = await handleOpenAiCompatibleChatCompletion(
+      createRequest({
+        model: "deepseek-v4-flash",
+        messages: [{ role: "user", content: "stream" }],
+        stream: true
+      })
+    );
+
+    // Injects include_usage even when the client omits stream_options.
+    const forwardedBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(forwardedBody.stream_options).toEqual({ include_usage: true });
+
+    // Drain the passthrough stream so the transform's flush() runs and logs usage.
+    await response.text();
+
+    expect(mocks.logUsage).toHaveBeenCalledTimes(1);
+    const logged = mocks.logUsage.mock.calls[0]?.[0];
+    expect(logged.status).toBe("success");
+    expect(logged.providerResult.inputTokens).toBe(11);
+    expect(logged.providerResult.outputTokens).toBe(7);
+    expect(logged.providerResult.totalTokens).toBe(18);
+  });
+
   it("does not allow Kie.ai models through chat completions", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     mocks.resolveModel.mockResolvedValue({

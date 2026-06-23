@@ -10,10 +10,10 @@ import {
 } from "@/components/api-gateway";
 import {
   formatMoneyMnt,
-  formatMoneyUsd,
   formatNumber,
   getGatewayAdminData,
-  getModelType
+  getModelType,
+  usdToMnt
 } from "@/server/api-gateway/adminData";
 import type { ApiModel } from "@/server/api-gateway/types";
 
@@ -21,15 +21,28 @@ export const dynamic = "force-dynamic";
 
 function formatModelPricing(model: ApiModel) {
   if (model.billing_type === "token") {
-    return `Hit ${formatMoneyUsd(Number(model.input_cache_hit_1m_token_price_usd))}/1M, Miss ${formatMoneyUsd(Number(model.input_cache_miss_1m_token_price_usd))}/1M, Out ${formatMoneyUsd(Number(model.output_1m_token_price_usd))}/1M`;
+    // Prefer MNT-native per-1K prices; otherwise convert the USD per-1M provider prices.
+    const input1k = Number(model.input_1k_token_price_mnt) || 0;
+    const output1k = Number(model.output_1k_token_price_mnt) || 0;
+
+    if (input1k > 0 || output1k > 0) {
+      return `Оролт ${formatMoneyMnt(input1k)}/1K, Гаралт ${formatMoneyMnt(output1k)}/1K`;
+    }
+
+    const hit = usdToMnt(Number(model.input_cache_hit_1m_token_price_usd) || 0);
+    const miss = usdToMnt(Number(model.input_cache_miss_1m_token_price_usd) || 0);
+    const output = usdToMnt(Number(model.output_1m_token_price_usd) || 0);
+    return `Cache ${formatMoneyMnt(hit)}/1M, Оролт ${formatMoneyMnt(miss)}/1M, Гаралт ${formatMoneyMnt(output)}/1M`;
   }
 
   if (model.billing_type === "image") {
-    return `${formatMoneyUsd(Number(model.unit_price_usd))} / зураг`;
+    const price = Number(model.unit_price_mnt) || usdToMnt(Number(model.unit_price_usd) || 0);
+    return `${formatMoneyMnt(price)} / зураг`;
   }
 
   if (model.billing_type === "request") {
-    return `${formatMoneyUsd(Number(model.unit_price_usd))} / request`;
+    const price = Number(model.unit_price_mnt) || usdToMnt(Number(model.unit_price_usd) || 0);
+    return `${formatMoneyMnt(price)} / хүсэлт`;
   }
 
   return `${formatMoneyMnt(Number(model.unit_price_mnt))} / нэгж`;

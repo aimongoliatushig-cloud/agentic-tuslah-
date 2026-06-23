@@ -10,8 +10,24 @@ import { formatDate, formatMoneyMnt, getGatewayAdminData, type NamedTransaction 
 
 export const dynamic = "force-dynamic";
 
+function TransactionAmount({ row }: { row: NamedTransaction }) {
+  const isCredit = row.type === "credit";
+  return (
+    <strong className={`tx-amount ${isCredit ? "credit" : "debit"}`}>
+      {isCredit ? "+" : "−"}
+      {formatMoneyMnt(row.amount)}
+    </strong>
+  );
+}
+
 export default async function CreditsPage() {
   const data = await getGatewayAdminData();
+  const totalAdded = data.transactions
+    .filter((row) => row.type === "credit")
+    .reduce((sum, row) => sum + row.amount, 0);
+  const totalSpent = data.transactions
+    .filter((row) => row.type === "debit")
+    .reduce((sum, row) => sum + row.amount, 0);
 
   return (
     <>
@@ -43,15 +59,11 @@ export default async function CreditsPage() {
         </FilterField>
       </FilterBar>
       <InlineActions>
-        <button className="action-button secondary" type="button">
-          ₮ цэнэглэх
-        </button>
-        <button className="action-button secondary" disabled type="button">
-          ₮ буцаах
-        </button>
-        <button className="action-button secondary" disabled type="button">
-          ₮ засварлах
-        </button>
+        <span className="inline-stat credit">Нийт цэнэглэлт: {formatMoneyMnt(totalAdded)}</span>
+        <span className="inline-stat debit">Нийт зарцуулалт: {formatMoneyMnt(totalSpent)}</span>
+        <span className="inline-hint">
+          Цэнэглэх, хасах үйлдлийг “Хэрэглэгчид” хэсгээс хэрэглэгч бүр дээр “₮ үлдэгдэл” товчоор хийнэ.
+        </span>
       </InlineActions>
       <DataTable<NamedTransaction>
         rows={data.transactions}
@@ -59,7 +71,8 @@ export default async function CreditsPage() {
           { key: "date", label: "Огноо", render: (row) => formatDate(row.created_at) },
           { key: "client", label: "Хэрэглэгч", render: (row) => row.clientName },
           { key: "type", label: "Төрөл", render: (row) => (row.type === "credit" ? "Нэмэлт" : "Зарцуулалт") },
-          { key: "amount", label: "Дүн", render: (row) => formatMoneyMnt(row.amount) },
+          { key: "amount", label: "Дүн", render: (row) => <TransactionAmount row={row} /> },
+          { key: "balance", label: "Дараах үлдэгдэл", render: (row) => formatMoneyMnt(Number(row.balance_after ?? 0)) },
           { key: "note", label: "Тайлбар", render: (row) => row.note ?? "Тайлбаргүй" }
         ]}
       />

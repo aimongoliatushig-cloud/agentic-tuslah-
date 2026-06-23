@@ -20,6 +20,11 @@ export default async function DashboardLayout({
                 API Gateway
               </Link>
             </li>
+            <li>
+              <Link className="nav-link" href="/account">
+                Хэрэглэгчийн хэсэг
+              </Link>
+            </li>
           </ul>
         </nav>
         <form action="/api/admin/logout" method="post">

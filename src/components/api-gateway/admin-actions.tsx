@@ -157,28 +157,65 @@ export function UserFormModal() {
   );
 }
 
+function formatMntAmount(value: number) {
+  return `${new Intl.NumberFormat("mn-MN").format(Math.round(value))}₮`;
+}
+
+const QUICK_AMOUNTS = [5000, 10000, 50000, 100000];
+
+type CreditMode = "add" | "deduct";
+
 export function CreditModal({ client }: { client: ApiClient }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<CreditMode>("add");
+  const [amount, setAmount] = useState(10000);
+  const [note, setNote] = useState("");
   const [state, setState] = useState<ActionState>(initialState);
+
+  const balance = Number(client.credit_balance ?? 0);
+  const projectedBalance = mode === "add" ? balance + amount : balance - amount;
+  const insufficient = mode === "deduct" && amount > balance;
+
+  function resetAndClose() {
+    setOpen(false);
+    setState(initialState);
+    setMode("add");
+    setAmount(10000);
+    setNote("");
+  }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    setState({ message: "Төгрөгийн үлдэгдэл цэнэглэж байна...", loading: true });
-    const response = await fetch(`/api/admin/api-gateway/clients/${client.id}/add-credit`, {
+
+    if (amount <= 0 || insufficient) {
+      return;
+    }
+
+    const endpoint = mode === "add" ? "add-credit" : "deduct-credit";
+    const defaultNote = mode === "add" ? "Админ цэнэглэлт" : "Админ хасалт";
+    setState({
+      message: mode === "add" ? "Үлдэгдэл цэнэглэж байна..." : "Үлдэгдлээс хасаж байна...",
+      loading: true
+    });
+    const response = await fetch(`/api/admin/api-gateway/clients/${client.id}/${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        amountMnt: Number(form.get("amountMnt") ?? 0),
-        note: form.get("note") || "Admin UI төгрөгийн цэнэглэлт"
-      })
+      body: JSON.stringify({ amountMnt: amount, note: note.trim() || defaultNote })
     });
-    const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+    const data = (await response.json().catch(() => ({}))) as {
+      error?: { message?: string };
+      transaction?: { balance_after?: number };
+    };
+    const successMessage =
+      mode === "add"
+        ? `${formatMntAmount(amount)} цэнэглэгдлээ.`
+        : `${formatMntAmount(amount)} хасагдлаа.`;
+    const newBalance = data.transaction?.balance_after;
     setState({
       message: response.ok
-        ? "Төгрөгийн үлдэгдэл амжилттай цэнэглэгдлээ."
-        : data.error?.message ?? "Үлдэгдэл цэнэглэхэд алдаа гарлаа.",
+        ? `${successMessage}${typeof newBalance === "number" ? ` Шинэ үлдэгдэл: ${formatMntAmount(newBalance)}` : ""}`
+        : data.error?.message ?? "Үйлдэл амжилтгүй боллоо.",
       loading: false
     });
 
@@ -190,29 +227,91 @@ export function CreditModal({ client }: { client: ApiClient }) {
   return (
     <>
       <button className="action-button secondary" type="button" onClick={() => setOpen(true)}>
-        ₮ цэнэглэх
+        ₮ үлдэгдэл
       </button>
       {open ? (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal-panel compact" role="dialog" aria-modal="true" aria-label="Төгрөг цэнэглэх">
+          <section className="modal-panel compact" role="dialog" aria-modal="true" aria-label="Үлдэгдэл удирдах">
             <div className="modal-head">
-              <h2>Төгрөг цэнэглэх</h2>
-              <button type="button" onClick={() => setOpen(false)}>
+              <div>
+                <h2>Үлдэгдэл удирдах</h2>
+                <p>{client.name}</p>
+              </div>
+              <button type="button" onClick={resetAndClose}>
                 Хаах
               </button>
             </div>
+
+            <div className="balance-summary">
+              <span>Одоогийн үлдэгдэл</span>
+              <strong>{formatMntAmount(balance)}</strong>
+            </div>
+
+            <div className="mode-toggle" role="tablist" aria-label="Үйлдлийн төрөл">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "add"}
+                className={mode === "add" ? "active" : ""}
+                onClick={() => setMode("add")}
+              >
+                Цэнэглэх
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "deduct"}
+                className={mode === "deduct" ? "active" : ""}
+                onClick={() => setMode("deduct")}
+              >
+                Хасах
+              </button>
+            </div>
+
             <form className="form-grid" onSubmit={onSubmit}>
-              <p className="dialog-copy">{client.name}</p>
+              <div className="quick-amounts">
+                {QUICK_AMOUNTS.map((value) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={amount === value ? "selected" : ""}
+                    onClick={() => setAmount(value)}
+                  >
+                    {formatMntAmount(value)}
+                  </button>
+                ))}
+              </div>
               <label>
                 <span>Дүн (₮)</span>
-                <input min="1" name="amountMnt" required type="number" defaultValue="10000" />
+                <input
+                  min="1"
+                  name="amountMnt"
+                  required
+                  type="number"
+                  value={amount}
+                  onChange={(event) => setAmount(Math.max(0, Number(event.target.value)))}
+                />
               </label>
               <label>
                 <span>Тайлбар</span>
-                <input name="note" defaultValue="Admin UI төгрөгийн цэнэглэлт" />
+                <input
+                  name="note"
+                  value={note}
+                  placeholder={mode === "add" ? "Жишээ: Сарын багц" : "Жишээ: Буцаалт"}
+                  onChange={(event) => setNote(event.target.value)}
+                />
               </label>
-              <button className="primary-command" disabled={state.loading} type="submit">
-                Нэмэх
+              <p className={`projected-balance ${insufficient ? "danger" : ""}`}>
+                {insufficient
+                  ? "Үлдэгдэл хүрэлцэхгүй байна."
+                  : `Үйлдлийн дараах үлдэгдэл: ${formatMntAmount(projectedBalance)}`}
+              </p>
+              <button
+                className={`primary-command ${mode === "deduct" ? "danger" : ""}`}
+                disabled={state.loading || amount <= 0 || insufficient}
+                type="submit"
+              >
+                {mode === "add" ? "Цэнэглэх" : "Хасах"}
               </button>
             </form>
             {state.message ? <p className="form-message">{state.message}</p> : null}

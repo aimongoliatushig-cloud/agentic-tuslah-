@@ -1,8 +1,18 @@
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
+import { readNumberEnv } from "@/server/env";
 import type { ApiClient, ApiKey, ApiModel, ApiUsageLog } from "@/server/api-gateway/types";
 import type { Database, Json } from "@/lib/database.types";
 
 export const dynamic = "force-dynamic";
+
+export function getUsdToMntRate() {
+  return readNumberEnv("API_GATEWAY_USD_TO_MNT_RATE", 0);
+}
+
+/** Converts a USD amount to MNT using the configured rate (0 if rate is unset). */
+export function usdToMnt(valueUsd: number) {
+  return valueUsd * getUsdToMntRate();
+}
 
 export type CreditTransaction =
   Database["public"]["Tables"]["api_credit_transactions"]["Row"];
@@ -19,6 +29,7 @@ export interface NamedUsageLog extends ApiUsageLog {
 
 export interface AdminClient extends ApiClient {
   apiKeys: ApiKey[];
+  monthSpentMnt: number;
   totalBudgetUsd: number;
   spentUsd: number;
   remainingUsd: number;
@@ -43,6 +54,8 @@ export interface GatewayAdminData {
     totalCreditBalance: number;
     totalBudgetRemainingUsd: number;
     totalBudgetLimitUsd: number;
+    totalBudgetRemainingMnt: number;
+    totalBudgetLimitMnt: number;
     todayRequests: number;
     monthRequests: number;
     estimatedRevenue: number;
@@ -273,9 +286,16 @@ export async function getGatewayAdminData(): Promise<GatewayAdminData> {
   const safeBudgets = budgets ?? [];
   const safeApiKeys = apiKeys ?? [];
   const successfulLogs = safeUsageLogs.filter((log) => log.status === "success");
+  const monthStartTime = startOfMonth().getTime();
   const rawModelMap = toMap(safeModels);
   const safeClients = rawClients.map((client) => {
     const clientApiKeys = safeApiKeys.filter((key) => key.client_id === client.id);
+    const monthSpentMnt = sumBy(
+      successfulLogs.filter(
+        (log) => log.client_id === client.id && new Date(log.created_at).getTime() >= monthStartTime
+      ),
+      (log) => Number(log.cost_mnt ?? 0)
+    );
     const clientBudgets = safeBudgets.filter((budget) => budget.client_id === client.id);
     const totalBudgetUsd =
       Number(
@@ -314,6 +334,7 @@ export async function getGatewayAdminData(): Promise<GatewayAdminData> {
     return {
       ...client,
       apiKeys: clientApiKeys,
+      monthSpentMnt: money(monthSpentMnt),
       totalBudgetUsd,
       spentUsd,
       remainingUsd: Math.max(0, totalBudgetUsd - spentUsd),
@@ -367,6 +388,8 @@ export async function getGatewayAdminData(): Promise<GatewayAdminData> {
       totalCreditBalance: sumBy(safeClients, (client) => client.credit_balance),
       totalBudgetRemainingUsd: sumBy(safeClients, (client) => client.remainingUsd),
       totalBudgetLimitUsd: sumBy(safeClients, (client) => client.totalBudgetUsd),
+      totalBudgetRemainingMnt: money(usdToMnt(sumBy(safeClients, (client) => client.remainingUsd))),
+      totalBudgetLimitMnt: money(usdToMnt(sumBy(safeClients, (client) => client.totalBudgetUsd))),
       todayRequests: safeUsageLogs.filter((log) => new Date(log.created_at) >= today).length,
       monthRequests: safeUsageLogs.filter((log) => new Date(log.created_at) >= month).length,
       estimatedRevenue: money(totalCostMnt || deductedCredits * (Number.isFinite(creditValue) ? creditValue : 1000)),

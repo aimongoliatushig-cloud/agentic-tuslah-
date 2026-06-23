@@ -10,7 +10,6 @@ import {
 import {
   formatDate,
   formatMoneyMnt,
-  formatMoneyUsd,
   formatNumber,
   getGatewayAdminData,
   type NamedUsageLog
@@ -73,7 +72,6 @@ export default async function UsagePage() {
           { key: "cacheHit", label: "Cache hit", render: (log) => formatNumber(log.input_cache_hit_tokens ?? 0) },
           { key: "cacheMiss", label: "Cache miss", render: (log) => formatNumber(log.input_cache_miss_tokens ?? 0) },
           { key: "units", label: "Нэгж", render: (log) => formatNumber(Number(log.billable_units ?? 0)) },
-          { key: "costUsd", label: "USD", render: (log) => formatMoneyUsd(Number(log.cost_usd ?? 0)) },
           { key: "costMnt", label: "Өртөг", render: (log) => formatMoneyMnt(Number(log.cost_mnt ?? 0)) },
           { key: "status", label: "Төлөв", render: (log) => <StatusBadge status={log.status} /> },
           {
