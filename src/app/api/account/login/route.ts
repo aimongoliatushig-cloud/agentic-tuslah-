@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { setAccountSessionCookie } from "@/server/accountAuth";
+import { getRequestOrigin, setAccountSessionCookie } from "@/server/accountAuth";
 import { validateClient } from "@/server/api-gateway/gatewayService";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = getRequestOrigin(request);
   const formData = await request.formData();
   const apiKey = String(formData.get("apiKey") ?? "").trim();
 

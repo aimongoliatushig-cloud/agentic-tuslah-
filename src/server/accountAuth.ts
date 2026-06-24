@@ -74,6 +74,30 @@ export function verifyAccountSession(value: string | undefined): { clientId: str
   }
 }
 
+/**
+ * Resolves the public origin of a request, honoring reverse-proxy headers
+ * (Caddy sets X-Forwarded-Host/Proto). Falls back to APP_BASE_URL, then the
+ * raw request URL. Needed so redirects and the OAuth redirect_uri use the real
+ * host, not the container's internal 0.0.0.0:3000.
+ */
+export function getRequestOrigin(request: Request) {
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+
+  if (host) {
+    const proto =
+      request.headers.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
+    return `${proto}://${host}`;
+  }
+
+  const envBase = optionalEnv("APP_BASE_URL");
+
+  if (envBase) {
+    return envBase.replace(/\/$/, "");
+  }
+
+  return new URL(request.url).origin;
+}
+
 export async function getAccountClientId() {
   const value = (await cookies()).get(ACCOUNT_SESSION_COOKIE)?.value;
   return verifyAccountSession(value)?.clientId ?? null;

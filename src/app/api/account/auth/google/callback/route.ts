@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { isAdminCookieSecure } from "@/server/adminAuth";
-import { setAccountSessionCookie } from "@/server/accountAuth";
+import { getRequestOrigin, setAccountSessionCookie } from "@/server/accountAuth";
 import { findActiveClientByEmail } from "@/server/api-gateway/accountData";
 import { exchangeGoogleCode, fetchGoogleUserInfo, isGoogleOAuthConfigured } from "@/server/googleOAuth";
 import { OAUTH_STATE_COOKIE } from "@/app/api/account/auth/google/route";
@@ -31,7 +31,7 @@ function redirectWithClearedState(origin: string, path: string) {
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const origin = url.origin;
+  const origin = getRequestOrigin(request);
 
   if (!isGoogleOAuthConfigured()) {
     return redirectWithClearedState(origin, "/account?error=google");

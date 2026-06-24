@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import { NextResponse } from "next/server";
 
+import { getRequestOrigin } from "@/server/accountAuth";
 import { isAdminCookieSecure } from "@/server/adminAuth";
 import { buildGoogleAuthUrl, isGoogleOAuthConfigured } from "@/server/googleOAuth";
 
@@ -10,7 +11,7 @@ export const runtime = "nodejs";
 export const OAUTH_STATE_COOKIE = "agf_oauth_state";
 
 export async function GET(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = getRequestOrigin(request);
 
   if (!isGoogleOAuthConfigured()) {
     return NextResponse.redirect(new URL("/account?error=google", origin), { status: 303 });
