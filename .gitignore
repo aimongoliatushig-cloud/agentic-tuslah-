@@ -11,3 +11,4 @@ pnpm-debug.log*
 *.tsbuildinfo
 .codex-dev-*.log
 .agents/
+scripts/ssh_run.py

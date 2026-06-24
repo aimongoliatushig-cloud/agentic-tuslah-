@@ -9,9 +9,34 @@ export function getUsdToMntRate() {
   return readNumberEnv("API_GATEWAY_USD_TO_MNT_RATE", 0);
 }
 
-/** Converts a USD amount to MNT using the configured rate (0 if rate is unset). */
+/** Converts a USD amount to MNT using the configured cost rate (0 if rate is unset). */
 export function usdToMnt(valueUsd: number) {
   return valueUsd * getUsdToMntRate();
+}
+
+/** Customer-facing (retail) USD→MNT rate. Higher than the cost rate; the gap is the markup. */
+export function getRetailUsdToMntRate() {
+  return readNumberEnv("API_GATEWAY_RETAIL_USD_TO_MNT_RATE", 10000);
+}
+
+/**
+ * Markup multiplier applied to internal cost-MNT figures to get the customer's
+ * retail price. retailRate / costRate (falls back to 1 if the cost rate is unset).
+ */
+export function getRetailMarkup() {
+  const costRate = getUsdToMntRate();
+
+  if (costRate <= 0) {
+    return 1;
+  }
+
+  const retailRate = getRetailUsdToMntRate();
+  return retailRate > 0 ? retailRate / costRate : 1;
+}
+
+/** Converts an internal cost-MNT amount to the customer-facing retail-MNT amount. */
+export function toRetailMnt(costMnt: number) {
+  return costMnt * getRetailMarkup();
 }
 
 export type CreditTransaction =
