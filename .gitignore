@@ -12,3 +12,4 @@ pnpm-debug.log*
 .codex-dev-*.log
 .agents/
 scripts/ssh_run.py
+_ssh_runner.py
