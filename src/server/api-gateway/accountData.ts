@@ -23,7 +23,27 @@ export async function findActiveClientByEmail(email: string): Promise<ApiClient 
     return null;
   }
 
-  return (data ?? []).find((client) => getClientEmail(client).toLowerCase() === normalized) ?? null;
+  const matches = (data ?? []).filter(
+    (client) => getClientEmail(client).toLowerCase() === normalized
+  );
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  // Some emails are shared by duplicate clients. Pick deterministically: the
+  // funded account first, then the oldest, so a stray empty duplicate never wins.
+  matches.sort((a, b) => {
+    const balanceDiff = Number(b.credit_balance ?? 0) - Number(a.credit_balance ?? 0);
+
+    if (balanceDiff !== 0) {
+      return balanceDiff;
+    }
+
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  });
+
+  return matches[0];
 }
 
 type RawTransaction = Database["public"]["Tables"]["api_credit_transactions"]["Row"];
