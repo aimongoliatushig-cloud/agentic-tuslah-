@@ -127,6 +127,82 @@ function ApiKeyManagerModal({ client }: { client: ClientWithKeys }) {
   );
 }
 
+function readClientEmail(client: ClientWithKeys) {
+  const metadata = client.metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    const email = (metadata as Record<string, unknown>).email;
+    return typeof email === "string" ? email : "";
+  }
+  return "";
+}
+
+function EditClientModal({ client }: { client: ClientWithKeys }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(client.name);
+  const [email, setEmail] = useState(readClientEmail(client));
+  const [state, setState] = useState<ActionState>(initialState);
+
+  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setState({ message: "Хадгалж байна...", loading: true });
+    const response = await fetch(`/api/admin/api-gateway/clients/${client.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), email: email.trim() })
+    });
+    const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+    setState({
+      message: response.ok ? "Хадгалагдлаа." : data.error?.message ?? "Хадгалахад алдаа гарлаа.",
+      loading: false
+    });
+
+    if (response.ok) {
+      setOpen(false);
+      router.refresh();
+    }
+  }
+
+  return (
+    <>
+      <button className="action-button secondary" type="button" onClick={() => setOpen(true)}>
+        Засах
+      </button>
+      {open ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-panel compact" role="dialog" aria-modal="true" aria-label="Хэрэглэгч засах">
+            <div className="modal-head">
+              <h2>Хэрэглэгч засах</h2>
+              <button type="button" onClick={() => setOpen(false)}>
+                Хаах
+              </button>
+            </div>
+            <form className="form-grid" onSubmit={onSubmit}>
+              <label>
+                <span>Нэр</span>
+                <input value={name} onChange={(event) => setName(event.target.value)} required />
+              </label>
+              <label>
+                <span>Gmail / И-мэйл</span>
+                <input
+                  type="email"
+                  value={email}
+                  placeholder="example@gmail.com"
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </label>
+              <button className="primary-command" disabled={state.loading} type="submit">
+                Хадгалах
+              </button>
+            </form>
+            {state.message ? <p className="form-message">{state.message}</p> : null}
+          </section>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function UserRowActions({ client }: { client: ClientWithKeys }) {
   const router = useRouter();
   const nextStatus = client.status === "active" ? "disabled" : "active";
@@ -147,9 +223,23 @@ export function UserRowActions({ client }: { client: ClientWithKeys }) {
     router.refresh();
   }
 
+  async function deleteClient() {
+    const response = await fetch(`/api/admin/api-gateway/clients/${client.id}`, {
+      method: "DELETE"
+    });
+
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+      throw new Error(data.error?.message ?? "Хэрэглэгч устгахад алдаа гарлаа.");
+    }
+
+    router.refresh();
+  }
+
   return (
     <div className="row-actions compact-row-actions">
       <CreditModal client={client} />
+      <EditClientModal client={client} />
       <ApiKeyManagerModal client={client} />
       <ConfirmDialog
         title={statusActionLabel}
@@ -159,6 +249,15 @@ export function UserRowActions({ client }: { client: ClientWithKeys }) {
         confirmLabel={statusActionLabel}
         variant="warning"
         onConfirm={updateStatus}
+      />
+      <ConfirmDialog
+        title="Хэрэглэгч устгах"
+        description={`${client.name} хэрэглэгчийг бүр мөсөн устгана. Түлхүүр, хэрэглээ, төлбөрийн түүх хамт устана. Энэ үйлдлийг буцаах боломжгүй.`}
+        triggerLabel="Устгах"
+        confirmLabel="Бүр мөсөн устгах"
+        confirmationText="УСТГАХ"
+        variant="danger"
+        onConfirm={deleteClient}
       />
     </div>
   );
