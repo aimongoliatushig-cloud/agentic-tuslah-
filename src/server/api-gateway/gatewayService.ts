@@ -340,13 +340,27 @@ export async function processGatewayRequest(params: {
   apiKey: string;
   payload: GatewayGeneratePayload;
 }): Promise<GatewayResult> {
-  const requestId = crypto.randomUUID();
-  const startedAt = Date.now();
   const client = await validateClient(params.apiKey);
 
   if (!client) {
     throw new GatewayError("Invalid or inactive API key.", 401, "unauthorized");
   }
+
+  return processGatewayRequestForClient({ client, payload: params.payload });
+}
+
+/**
+ * Same billing pipeline as processGatewayRequest, but for callers that have
+ * already authenticated the client through another channel (e.g. the admin
+ * studio, where only the key HASH exists so the raw key cannot be replayed).
+ */
+export async function processGatewayRequestForClient(params: {
+  client: ApiClient;
+  payload: GatewayGeneratePayload;
+}): Promise<GatewayResult> {
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const client = params.client;
 
   const model = await resolveModel(params.payload.model);
 

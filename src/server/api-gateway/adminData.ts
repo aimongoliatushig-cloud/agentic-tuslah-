@@ -450,7 +450,7 @@ export interface GenerationItem {
   urls: string[];
 }
 
-function extractMediaUrls(value: Json): string[] {
+export function extractMediaUrls(value: Json): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return [];
   }
@@ -473,6 +473,65 @@ function extractMediaUrls(value: Json): string[] {
   }
 
   return Array.from(urls);
+}
+
+export interface StudioClientOption {
+  id: string;
+  name: string;
+  creditBalance: number;
+}
+
+export interface StudioModelOption {
+  id: string;
+  name: string;
+  kind: "video" | "image";
+  supportsDuration: boolean;
+}
+
+/** Active clients + active Kie models for the admin Studio page. */
+export async function getStudioBootstrap(): Promise<{
+  clients: StudioClientOption[];
+  models: StudioModelOption[];
+}> {
+  const supabase = getSupabaseAdminClient();
+  const [{ data: clients }, { data: models }] = await Promise.all([
+    supabase
+      .from("api_clients")
+      .select("id,name,credit_balance")
+      .eq("status", "active")
+      .order("name"),
+    supabase.from("api_models").select("id,name,provider,config").eq("status", "active")
+  ]);
+  const studioModels: StudioModelOption[] = (models ?? [])
+    .filter((model) => model.provider.toLowerCase() === "kie.ai")
+    .map((model) => {
+      const config =
+        model.config && typeof model.config === "object" && !Array.isArray(model.config)
+          ? (model.config as Record<string, Json>)
+          : {};
+      const inputDefaults =
+        config.input_defaults &&
+        typeof config.input_defaults === "object" &&
+        !Array.isArray(config.input_defaults)
+          ? (config.input_defaults as Record<string, Json>)
+          : {};
+
+      return {
+        id: model.id,
+        name: model.name,
+        kind: config.kind === "video" ? ("video" as const) : ("image" as const),
+        supportsDuration: "duration" in inputDefaults
+      };
+    });
+
+  return {
+    clients: (clients ?? []).map((client) => ({
+      id: client.id,
+      name: client.name,
+      creditBalance: client.credit_balance
+    })),
+    models: studioModels
+  };
 }
 
 /** Recent successful Kie.ai generations (images/videos) with their media URLs. */
