@@ -1,3 +1,6 @@
+import { fetchWithTimeout } from "@/server/api-gateway/fetchTimeout";
+import { redactProviderData } from "@/server/api-gateway/providerRedact";
+import { extractTokenUsage } from "@/server/api-gateway/usageExtract";
 import type { ProviderPayload, ProviderResult } from "@/server/api-gateway/types";
 import { isProduction, readIntEnv, readJsonEnv } from "@/server/env";
 
@@ -153,58 +156,6 @@ function buildKieCreateTaskBody(payload: ProviderPayload) {
       aspect_ratio: getKieAspectRatio(payload)
     }
   };
-}
-
-function extractTokenUsage(data: ProviderResult["data"]) {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    return {};
-  }
-
-  const usage = "usage" in data ? data.usage : undefined;
-
-  if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
-    return {};
-  }
-
-  const usageRecord = usage as Record<string, unknown>;
-  const inputTokens =
-    typeof usageRecord.prompt_tokens === "number"
-      ? usageRecord.prompt_tokens
-      : typeof usageRecord.input_tokens === "number"
-        ? usageRecord.input_tokens
-        : undefined;
-  const outputTokens =
-    typeof usageRecord.completion_tokens === "number"
-      ? usageRecord.completion_tokens
-      : typeof usageRecord.output_tokens === "number"
-        ? usageRecord.output_tokens
-        : undefined;
-  const totalTokens =
-    typeof usageRecord.total_tokens === "number"
-      ? usageRecord.total_tokens
-      : inputTokens !== undefined || outputTokens !== undefined
-        ? (inputTokens ?? 0) + (outputTokens ?? 0)
-        : undefined;
-  const details =
-    usageRecord.prompt_tokens_details &&
-    typeof usageRecord.prompt_tokens_details === "object" &&
-    !Array.isArray(usageRecord.prompt_tokens_details)
-      ? (usageRecord.prompt_tokens_details as Record<string, unknown>)
-      : {};
-  const inputCacheHitTokens =
-    typeof usageRecord.prompt_cache_hit_tokens === "number"
-      ? usageRecord.prompt_cache_hit_tokens
-      : typeof details.cached_tokens === "number"
-        ? details.cached_tokens
-        : undefined;
-  const inputCacheMissTokens =
-    typeof usageRecord.prompt_cache_miss_tokens === "number"
-      ? usageRecord.prompt_cache_miss_tokens
-      : inputTokens !== undefined && inputCacheHitTokens !== undefined
-        ? Math.max(0, inputTokens - inputCacheHitTokens)
-        : undefined;
-
-  return { inputTokens, outputTokens, totalTokens, inputCacheHitTokens, inputCacheMissTokens };
 }
 
 function arrayLength(value: unknown) {
@@ -425,64 +376,8 @@ function isValidProviderApiKey(value: string) {
   return isByteString(value) && !/[А-Яа-яӨөҮүЁё]/.test(value);
 }
 
-function redactProviderData(data: ProviderResult["data"]): ProviderResult["data"] {
-  const maxLength = readIntEnv("API_GATEWAY_PROVIDER_RESPONSE_MAX_CHARS", 20_000);
-  const shouldStoreRaw = process.env.API_GATEWAY_STORE_RAW_PROVIDER_RESPONSE === "true";
-
-  if (shouldStoreRaw) {
-    return data;
-  }
-
-  const text = JSON.stringify(data, (key, value) => {
-    const normalized = key.toLowerCase();
-
-    if (isSensitiveProviderField(normalized)) {
-      return "[redacted]";
-    }
-
-    return value;
-  });
-
-  if (text.length <= maxLength) {
-    return JSON.parse(text) as ProviderResult["data"];
-  }
-
-  return {
-    truncated: true,
-    originalLength: text.length,
-    preview: text.slice(0, maxLength)
-  };
-}
-
-function isSensitiveProviderField(normalizedKey: string) {
-  return (
-    normalizedKey.includes("authorization") ||
-    normalizedKey.includes("api_key") ||
-    normalizedKey.includes("apikey") ||
-    normalizedKey.includes("secret") ||
-    normalizedKey.includes("password") ||
-    normalizedKey === "token" ||
-    normalizedKey.endsWith("_token") && !normalizedKey.endsWith("_tokens") ||
-    normalizedKey.endsWith("-token") && !normalizedKey.endsWith("-tokens")
-  );
-}
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 async function callKieGptImage2Provider(payload: ProviderPayload): Promise<ProviderResult> {
@@ -638,18 +533,18 @@ async function callKieGptImage2Provider(payload: ProviderPayload): Promise<Provi
       }
     }
 
+    // Timeout is treated as a failure so the caller refunds the reserved credit.
+    // The Kie task may still finish upstream; the task ID lets the client check later.
     return {
-      success: true,
+      success: false,
       data: redactProviderData({
         provider: "kie.ai",
         taskId,
         state: "pending",
         model: getKieProviderModel(payload),
-        output: `Kie task accepted but did not complete before timeout. Task ID: ${taskId}`,
         raw: latestData
       }),
-      imageCount: 0,
-      billableUnits: 1
+      error: `Kie task did not complete before timeout. Reserved credit was refunded. Task ID: ${taskId}`
     };
   } catch (error) {
     return {

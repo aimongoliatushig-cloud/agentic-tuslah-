@@ -1,18 +1,9 @@
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
+import { readBearerToken } from "@/server/api-gateway/bearer";
 import { validateClient } from "@/server/api-gateway/gatewayService";
 import { jsonError } from "@/server/http";
 
 export const runtime = "nodejs";
-
-function readBearerToken(request: Request) {
-  const authorization = request.headers.get("authorization");
-
-  if (!authorization?.startsWith("Bearer ")) {
-    return null;
-  }
-
-  return authorization.slice("Bearer ".length).trim();
-}
 
 function toOpenAiModel(row: {
   name: string;

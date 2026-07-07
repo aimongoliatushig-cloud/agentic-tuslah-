@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { jsonError, readJson } from "@/server/http";
+import { readBearerToken } from "@/server/api-gateway/bearer";
 import { processGatewayRequest } from "@/server/api-gateway/gatewayService";
 import { checkRateLimit } from "@/server/api-gateway/rateLimitService";
 import { validateGatewayGeneratePayload } from "@/server/api-gateway/validation";
@@ -17,16 +18,6 @@ interface ImagesBody {
   aspect_ratio?: string;
   response_format?: string;
   [key: string]: unknown;
-}
-
-function readBearerToken(request: Request) {
-  const authorization = request.headers.get("authorization");
-
-  if (!authorization?.startsWith("Bearer ")) {
-    return null;
-  }
-
-  return authorization.slice("Bearer ".length).trim();
 }
 
 function sizeToAspectRatio(size?: string) {

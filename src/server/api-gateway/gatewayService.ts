@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { deductCredit, refundCreditForRequest } from "@/server/api-gateway/creditService";
+import { GatewayError } from "@/server/api-gateway/errors";
+import { reserveInflightBudget } from "@/server/api-gateway/inflightBudget";
 import { callUpstreamProvider } from "@/server/api-gateway/providerService";
+import { redactProviderData } from "@/server/api-gateway/providerRedact";
 import { checkBudgetBeforeRequest } from "@/server/api-gateway/budgetService";
 import { readNumberEnv } from "@/server/env";
 import type {
@@ -13,7 +16,7 @@ import type {
   ProviderResult
 } from "@/server/api-gateway/types";
 import type { Json } from "@/lib/database.types";
-import { parseApiKey, verifyApiKey } from "@/server/api-gateway/apiKeyService";
+import { hashApiKey, parseApiKey, verifyApiKey } from "@/server/api-gateway/apiKeyService";
 
 const USAGE_EXHAUSTED_MESSAGE = "Таны хэрэглээ дууссан байна.";
 
@@ -60,17 +63,21 @@ export async function validateClient(apiKey: string) {
     }
   }
 
-  const { data, error } = await supabase
+  // Legacy keys (no api_keys row) are stored as a SHA-256 hash directly on the
+  // client, so we can look them up via the unique api_key_hash index instead of
+  // scanning every active client.
+  const { data: legacyClient, error } = await supabase
     .from("api_clients")
     .select("*")
-    .eq("status", "active");
+    .eq("api_key_hash", hashApiKey(apiKey))
+    .eq("status", "active")
+    .maybeSingle();
 
   if (error) {
     throw new Error(`Unable to validate API key: ${error.message}`);
   }
 
-  const client = data.find((item) => verifyApiKey(apiKey, item.api_key_hash));
-  return client ?? null;
+  return legacyClient ?? null;
 }
 
 export async function resolveModel(modelName: string) {
@@ -230,6 +237,14 @@ export async function logUsage(params: {
     params.providerResult,
     params.creditCost
   );
+  const estimatedCostUsd =
+    typeof params.providerResult.data === "object" &&
+    params.providerResult.data &&
+    !Array.isArray(params.providerResult.data) &&
+    "estimatedCostUsd" in params.providerResult.data &&
+    typeof params.providerResult.data.estimatedCostUsd === "number"
+      ? params.providerResult.data.estimatedCostUsd
+      : usageAccounting.costUsd;
   const { data, error } = await supabase
     .from("api_usage_logs")
     .insert({
@@ -246,17 +261,10 @@ export async function logUsage(params: {
       billable_units: usageAccounting.billableUnits,
       cost_mnt: usageAccounting.costMnt,
       cost_usd: usageAccounting.costUsd,
-      estimated_cost_usd:
-        typeof params.providerResult.data === "object" &&
-        params.providerResult.data &&
-        !Array.isArray(params.providerResult.data) &&
-        "estimatedCostUsd" in params.providerResult.data &&
-        typeof params.providerResult.data.estimatedCostUsd === "number"
-          ? params.providerResult.data.estimatedCostUsd
-          : usageAccounting.costUsd,
+      estimated_cost_usd: estimatedCostUsd,
       cost_breakdown: usageAccounting.costBreakdown,
       latency_ms: params.latencyMs,
-      provider_response: params.providerResult.data,
+      provider_response: redactProviderData(params.providerResult.data),
       error_message: params.providerResult.error ?? null
     })
     .select()
@@ -269,6 +277,67 @@ export async function logUsage(params: {
   return data;
 }
 
+/**
+ * Token-billed models reserve a flat `credit_cost` up front because the real
+ * usage is unknown until the provider answers. Once actual token counts are in,
+ * this settles the difference: refunds when the reservation was too high, charges
+ * extra when it was too low. Failures here never break the request — the
+ * reservation simply stands as the final charge.
+ */
+export async function reconcileReservedCredit(params: {
+  client: ApiClient;
+  model: ApiModel;
+  providerResult: ProviderResult;
+  reservedCredit: number;
+  requestId: string;
+}): Promise<{ finalCreditCost: number; balanceAfter: number | null }> {
+  const { client, model, providerResult, reservedCredit, requestId } = params;
+
+  if (getBillingType(model) !== "token") {
+    return { finalCreditCost: reservedCredit, balanceAfter: null };
+  }
+
+  const accounting = calculateUsageAccounting(model, providerResult, reservedCredit);
+
+  if (accounting.costMnt <= 0) {
+    return { finalCreditCost: reservedCredit, balanceAfter: null };
+  }
+
+  const actualCredit = Math.max(1, Math.ceil(accounting.costMnt));
+
+  try {
+    if (actualCredit < reservedCredit) {
+      const refund = await refundCreditForRequest(
+        client.id,
+        reservedCredit - actualCredit,
+        requestId,
+        `Gateway reconciliation refund ${requestId} for ${model.name}`
+      );
+      return { finalCreditCost: actualCredit, balanceAfter: refund.balance_after };
+    }
+
+    if (actualCredit > reservedCredit) {
+      const charge = await deductCredit(
+        client.id,
+        actualCredit - reservedCredit,
+        `Gateway reconciliation charge ${requestId} for ${model.name}`,
+        `${requestId}-adjust`
+      );
+      return { finalCreditCost: actualCredit, balanceAfter: charge.balance_after };
+    }
+  } catch (error) {
+    console.error("[api-gateway] credit reconciliation failed", {
+      requestId,
+      clientId: client.id,
+      reservedCredit,
+      actualCredit,
+      error: error instanceof Error ? error.message : error
+    });
+  }
+
+  return { finalCreditCost: reservedCredit, balanceAfter: null };
+}
+
 export async function processGatewayRequest(params: {
   apiKey: string;
   payload: GatewayGeneratePayload;
@@ -278,13 +347,13 @@ export async function processGatewayRequest(params: {
   const client = await validateClient(params.apiKey);
 
   if (!client) {
-    throw new Error("Invalid or inactive API key.");
+    throw new GatewayError("Invalid or inactive API key.", 401, "unauthorized");
   }
 
   const model = await resolveModel(params.payload.model);
 
   if (!model) {
-    throw new Error("Requested model is unavailable.");
+    throw new GatewayError("Requested model is unavailable.", 404, "model_unavailable");
   }
 
   const creditCost = calculateCreditCost(model);
@@ -318,112 +387,141 @@ export async function processGatewayRequest(params: {
       latencyMs: Date.now() - startedAt
     });
 
-    throw new Error(USAGE_EXHAUSTED_MESSAGE);
+    throw new GatewayError(USAGE_EXHAUSTED_MESSAGE, 402, "usage_exhausted");
   }
 
-  let transaction: Awaited<ReturnType<typeof deductCredit>>;
+  // Count this request's estimate against concurrent budget checks until its
+  // cost lands in api_usage_logs (released in the finally below).
+  const releaseBudget = reserveInflightBudget(client.id, budgetCheck.estimatedCostUsd);
 
   try {
-    transaction = await deductCredit(
-      client.id,
-      creditCost,
-      `Gateway reservation ${requestId} for ${model.name}`,
-      requestId
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to reserve credit.";
-    await logUsage({
-      client,
-      model,
-      requestId,
-      status: "failed",
-      creditCost: 0,
-      providerResult: {
-        success: false,
-        data: {
-          reason: "credit_reservation_failed",
-          requiredCredit: creditCost
-        },
-        error: message.includes("Insufficient") ? USAGE_EXHAUSTED_MESSAGE : message
-      },
-      latencyMs: Date.now() - startedAt
-    });
-
-    throw new Error(message.includes("Insufficient") ? USAGE_EXHAUSTED_MESSAGE : message);
-  }
-
-  const providerResult = await forwardToProvider({
-    model,
-    request: params.payload
-  });
-  const latencyMs = Date.now() - startedAt;
-
-  if (!providerResult.success) {
-    let refundError: string | null = null;
+    let transaction: Awaited<ReturnType<typeof deductCredit>>;
 
     try {
-      await refundCreditForRequest(
+      transaction = await deductCredit(
         client.id,
         creditCost,
-        requestId,
-        `Gateway refund ${requestId} for failed ${model.name}`
+        `Gateway reservation ${requestId} for ${model.name}`,
+        requestId
       );
     } catch (error) {
-      refundError = error instanceof Error ? error.message : "Unable to refund reserved credit.";
+      const message = error instanceof Error ? error.message : "Unable to reserve credit.";
+      await logUsage({
+        client,
+        model,
+        requestId,
+        status: "failed",
+        creditCost: 0,
+        providerResult: {
+          success: false,
+          data: {
+            reason: "credit_reservation_failed",
+            requiredCredit: creditCost
+          },
+          error: message.includes("Insufficient") ? USAGE_EXHAUSTED_MESSAGE : message
+        },
+        latencyMs: Date.now() - startedAt
+      });
+
+      if (message.includes("Insufficient")) {
+        throw new GatewayError(USAGE_EXHAUSTED_MESSAGE, 402, "usage_exhausted");
+      }
+
+      throw new GatewayError(message, 400, "gateway_error");
     }
 
-    await logUsage({
+    const providerResult = await forwardToProvider({
+      model,
+      request: params.payload
+    });
+    const latencyMs = Date.now() - startedAt;
+
+    if (!providerResult.success) {
+      let refundError: string | null = null;
+
+      try {
+        await refundCreditForRequest(
+          client.id,
+          creditCost,
+          requestId,
+          `Gateway refund ${requestId} for failed ${model.name}`
+        );
+      } catch (error) {
+        refundError = error instanceof Error ? error.message : "Unable to refund reserved credit.";
+      }
+
+      await logUsage({
+        client,
+        model,
+        requestId,
+        status: "failed",
+        creditCost: 0,
+        providerResult: refundError
+          ? {
+              ...providerResult,
+              data: {
+                provider: providerResult.data,
+                refundError
+              }
+            }
+          : providerResult,
+        latencyMs
+      });
+
+      if (refundError) {
+        throw new Error(`Provider request failed and credit refund failed: ${refundError}`);
+      }
+
+      throw new Error(providerResult.error ?? "Provider request failed.");
+    }
+
+    const reconciliation = await reconcileReservedCredit({
       client,
       model,
-      requestId,
-      status: "failed",
-      creditCost: 0,
-      providerResult: refundError
-        ? {
-            ...providerResult,
-            data: {
-              provider: providerResult.data,
-              refundError
-            }
-          }
-        : providerResult,
-      latencyMs
+      providerResult,
+      reservedCredit: creditCost,
+      requestId
     });
 
-    if (refundError) {
-      throw new Error(`Provider request failed and credit refund failed: ${refundError}`);
+    try {
+      await logUsage({
+        client,
+        model,
+        requestId,
+        status: "success",
+        creditCost: reconciliation.finalCreditCost,
+        providerResult,
+        latencyMs
+      });
+    } catch (error) {
+      // The provider already answered and credit is settled — logging must not
+      // turn a successful request into a client-facing failure.
+      console.error("[api-gateway] failed to log successful usage", {
+        requestId,
+        error: error instanceof Error ? error.message : error
+      });
     }
 
-    throw new Error(providerResult.error ?? "Provider request failed.");
+    const usageAccounting = calculateUsageAccounting(model, providerResult, reconciliation.finalCreditCost);
+
+    return {
+      requestId,
+      model: model.name,
+      creditCost: reconciliation.finalCreditCost,
+      balanceAfter: reconciliation.balanceAfter ?? transaction.balance_after,
+      usage: {
+        inputTokens: usageAccounting.inputTokens,
+        outputTokens: usageAccounting.outputTokens,
+        totalTokens: usageAccounting.totalTokens,
+        inputCacheHitTokens: usageAccounting.inputCacheHitTokens,
+        inputCacheMissTokens: usageAccounting.inputCacheMissTokens,
+        billableUnits: usageAccounting.billableUnits,
+        costUsd: usageAccounting.costUsd,
+        costMnt: usageAccounting.costMnt
+      },
+      provider: providerResult.data
+    };
+  } finally {
+    releaseBudget();
   }
-
-  await logUsage({
-    client,
-    model,
-    requestId,
-    status: "success",
-    creditCost,
-    providerResult,
-    latencyMs
-  });
-
-  const usageAccounting = calculateUsageAccounting(model, providerResult, creditCost);
-
-  return {
-    requestId,
-    model: model.name,
-    creditCost,
-    balanceAfter: transaction.balance_after,
-    usage: {
-      inputTokens: usageAccounting.inputTokens,
-      outputTokens: usageAccounting.outputTokens,
-      totalTokens: usageAccounting.totalTokens,
-      inputCacheHitTokens: usageAccounting.inputCacheHitTokens,
-      inputCacheMissTokens: usageAccounting.inputCacheMissTokens,
-      billableUnits: usageAccounting.billableUnits,
-      costUsd: usageAccounting.costUsd,
-      costMnt: usageAccounting.costMnt
-    },
-    provider: providerResult.data
-  };
 }

@@ -13,6 +13,8 @@ export function jsonError(message: string, status = 400, code = "internal_error"
     {
       error: {
         code,
+        // OpenAI SDKs read error.type; mirror the code so both shapes work.
+        type: code,
         message,
         ...(details ? { details } : {})
       }

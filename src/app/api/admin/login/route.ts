@@ -10,9 +10,14 @@ function safeNext(value: FormDataEntryValue | null) {
   return next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard/api-gateway";
 }
 
+function appUrl(path: string) {
+  const baseUrl = optionalEnv("APP_BASE_URL");
+  return new URL(path, baseUrl || "http://72.62.197.97:3010");
+}
+
 function redirectToLogin(request: Request, next: string, retryAfter?: number) {
   const response = NextResponse.redirect(
-    new URL(`/admin/login?error=1&next=${encodeURIComponent(next)}`, request.url),
+    appUrl(`/admin/login?error=1&next=${encodeURIComponent(next)}`),
     { status: 303 }
   );
 
@@ -56,7 +61,7 @@ export async function POST(request: Request) {
     return redirectToLogin(request, next);
   }
 
-  const response = NextResponse.redirect(new URL(next, request.url), { status: 303 });
+  const response = NextResponse.redirect(appUrl(next), { status: 303 });
   setAdminSessionCookie(response, configuredToken);
   await writeAdminLoginAuditLog({
     request,

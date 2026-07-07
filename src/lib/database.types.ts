@@ -476,6 +476,18 @@ export interface Database {
           balance_after: number;
         }>;
       };
+      sum_usage_costs: {
+        Args: {
+          p_client_id: string;
+          p_since?: string | null;
+        };
+        Returns: Array<{
+          model_id: string;
+          model_name: string;
+          provider: string;
+          total_cost_usd: number;
+        }>;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

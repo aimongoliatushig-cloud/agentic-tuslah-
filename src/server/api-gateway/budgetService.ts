@@ -1,4 +1,5 @@
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
+import { getInflightBudgetUsd } from "@/server/api-gateway/inflightBudget";
 import type { ApiClient, ApiModel, GatewayGeneratePayload } from "@/server/api-gateway/types";
 
 type BudgetLimit = {
@@ -7,6 +8,13 @@ type BudgetLimit = {
   scope_key: string;
   period: "daily" | "weekly" | "monthly" | "lifetime";
   limit_usd: number;
+};
+
+type SpendAggregate = {
+  model_id: string;
+  model_name: string;
+  provider: string;
+  total_cost_usd: number;
 };
 
 type UsageSpendRow = {
@@ -22,6 +30,8 @@ function roundUsd(value: number) {
   return Math.round(value * 100000000) / 100000000;
 }
 
+// Period boundaries are computed in UTC so limits behave the same regardless
+// of the server's local timezone.
 function periodStart(period: BudgetLimit["period"]) {
   const now = new Date();
 
@@ -30,19 +40,19 @@ function periodStart(period: BudgetLimit["period"]) {
   }
 
   if (period === "daily") {
-    now.setHours(0, 0, 0, 0);
+    now.setUTCHours(0, 0, 0, 0);
     return now.toISOString();
   }
 
   if (period === "weekly") {
-    const day = now.getDay() === 0 ? 6 : now.getDay() - 1;
-    now.setDate(now.getDate() - day);
-    now.setHours(0, 0, 0, 0);
+    const day = now.getUTCDay() === 0 ? 6 : now.getUTCDay() - 1;
+    now.setUTCDate(now.getUTCDate() - day);
+    now.setUTCHours(0, 0, 0, 0);
     return now.toISOString();
   }
 
-  now.setDate(1);
-  now.setHours(0, 0, 0, 0);
+  now.setUTCDate(1);
+  now.setUTCHours(0, 0, 0, 0);
   return now.toISOString();
 }
 
@@ -108,7 +118,7 @@ function matchesScope(limit: BudgetLimit, model: ApiModel) {
   return limit.scope_key === model.name || limit.scope_key === model.id;
 }
 
-function spentForScope(limit: BudgetLimit, rows: UsageSpendRow[], model: ApiModel) {
+function spentForScope(limit: BudgetLimit, rows: SpendAggregate[], model: ApiModel) {
   return rows
     .filter((row) => {
       if (limit.scope_type === "total") {
@@ -116,17 +126,21 @@ function spentForScope(limit: BudgetLimit, rows: UsageSpendRow[], model: ApiMode
       }
 
       if (limit.scope_type === "provider") {
-        return row.api_models?.provider === model.provider;
+        return row.provider === model.provider;
       }
 
-      return row.model_id === model.id || row.api_models?.name === model.name;
+      return row.model_id === model.id || row.model_name === model.name;
     })
-    .reduce((sum, row) => sum + Number(row.cost_usd ?? 0), 0);
+    .reduce((sum, row) => sum + Number(row.total_cost_usd ?? 0), 0);
 }
 
-async function getSpendRows(clientId: string, period: BudgetLimit["period"]) {
+// Fallback for environments where the sum_usage_costs RPC has not been applied
+// yet: fetch the raw rows and aggregate per model in memory.
+async function getSpendAggregatesFromRows(
+  clientId: string,
+  start: string | null
+): Promise<SpendAggregate[]> {
   const supabase = getSupabaseAdminClient();
-  const start = periodStart(period);
   let query = supabase
     .from("api_usage_logs")
     .select("model_id,cost_usd,api_models(name,provider)")
@@ -143,7 +157,46 @@ async function getSpendRows(clientId: string, period: BudgetLimit["period"]) {
     throw new Error(`Unable to read budget usage: ${error.message}`);
   }
 
-  return (data ?? []) as UsageSpendRow[];
+  const aggregates = new Map<string, SpendAggregate>();
+
+  for (const row of (data ?? []) as UsageSpendRow[]) {
+    const existing = aggregates.get(row.model_id);
+
+    if (existing) {
+      existing.total_cost_usd += Number(row.cost_usd ?? 0);
+      continue;
+    }
+
+    aggregates.set(row.model_id, {
+      model_id: row.model_id,
+      model_name: row.api_models?.name ?? "",
+      provider: row.api_models?.provider ?? "",
+      total_cost_usd: Number(row.cost_usd ?? 0)
+    });
+  }
+
+  return Array.from(aggregates.values());
+}
+
+async function getSpendAggregates(
+  clientId: string,
+  period: BudgetLimit["period"]
+): Promise<SpendAggregate[]> {
+  const supabase = getSupabaseAdminClient();
+  const start = periodStart(period);
+  const { data, error } = await supabase.rpc("sum_usage_costs", {
+    p_client_id: clientId,
+    p_since: start
+  });
+
+  if (error) {
+    return getSpendAggregatesFromRows(clientId, start);
+  }
+
+  return ((data ?? []) as SpendAggregate[]).map((row) => ({
+    ...row,
+    total_cost_usd: Number(row.total_cost_usd ?? 0)
+  }));
 }
 
 export async function checkBudgetBeforeRequest(params: {
@@ -166,11 +219,21 @@ export async function checkBudgetBeforeRequest(params: {
     matchesScope(limit, params.model)
   );
   const estimatedCostUsd = estimateRequestCostUsd(params.model, params.payload);
+  // Estimated cost of requests that passed this check but are not logged yet;
+  // without it concurrent requests could all slip under the limit together.
+  const inflightUsd = getInflightBudgetUsd(params.client.id);
+  const aggregatesByPeriod = new Map<BudgetLimit["period"], SpendAggregate[]>();
 
   for (const limit of relevantLimits) {
-    const rows = await getSpendRows(params.client.id, limit.period);
+    let rows = aggregatesByPeriod.get(limit.period);
+
+    if (!rows) {
+      rows = await getSpendAggregates(params.client.id, limit.period);
+      aggregatesByPeriod.set(limit.period, rows);
+    }
+
     const spentUsd = spentForScope(limit, rows, params.model);
-    const projectedUsd = spentUsd + estimatedCostUsd;
+    const projectedUsd = spentUsd + inflightUsd + estimatedCostUsd;
 
     if (projectedUsd > Number(limit.limit_usd)) {
       return {

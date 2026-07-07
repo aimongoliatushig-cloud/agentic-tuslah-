@@ -2,14 +2,19 @@ import crypto from "node:crypto";
 
 import { NextResponse } from "next/server";
 
+import { readBearerToken } from "@/server/api-gateway/bearer";
 import { checkBudgetBeforeRequest } from "@/server/api-gateway/budgetService";
 import { deductCredit, refundCreditForRequest } from "@/server/api-gateway/creditService";
+import { fetchWithTimeout } from "@/server/api-gateway/fetchTimeout";
 import {
   calculateCreditCost,
   logUsage,
+  reconcileReservedCredit,
   resolveModel,
   validateClient
 } from "@/server/api-gateway/gatewayService";
+import { reserveInflightBudget } from "@/server/api-gateway/inflightBudget";
+import { extractTokenUsage, type TokenUsage } from "@/server/api-gateway/usageExtract";
 import type { ApiClient, ApiModel, GatewayGeneratePayload, ProviderResult } from "@/server/api-gateway/types";
 import { readIntEnv } from "@/server/env";
 import { jsonError } from "@/server/http";
@@ -25,16 +30,6 @@ type OpenAiChatBody = Record<string, unknown> & {
 type PreparedGatewayRequest =
   | { ok: true; apiKey: string; client: ApiClient; model: ApiModel }
   | { ok: false; error: Response };
-
-function readBearerToken(request: Request) {
-  const authorization = request.headers.get("authorization");
-
-  if (!authorization?.startsWith("Bearer ")) {
-    return null;
-  }
-
-  return authorization.slice("Bearer ".length).trim();
-}
 
 export function isOpenAiCompatibleRequestMode() {
   return process.env.UPSTREAM_AI_REQUEST_MODE === "openai-compatible";
@@ -150,21 +145,6 @@ function debugLogUpstream(status: number, data?: unknown) {
   });
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit) {
-  const controller = new AbortController();
-  const timeoutMs = readIntEnv("UPSTREAM_AI_TIMEOUT_MS", 30000);
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function parseResponse(response: Response) {
   const contentType = response.headers.get("content-type") ?? "";
 
@@ -181,55 +161,12 @@ async function parseResponse(response: Response) {
   }
 }
 
-function extractUsage(data: unknown) {
-  const usage =
-    data && typeof data === "object" && !Array.isArray(data) && "usage" in data ? data.usage : undefined;
-
-  if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
-    return {};
-  }
-
-  const usageRecord = usage as Record<string, unknown>;
-  const inputTokens =
-    typeof usageRecord.prompt_tokens === "number"
-      ? usageRecord.prompt_tokens
-      : typeof usageRecord.input_tokens === "number"
-        ? usageRecord.input_tokens
-        : undefined;
-  const outputTokens =
-    typeof usageRecord.completion_tokens === "number"
-      ? usageRecord.completion_tokens
-      : typeof usageRecord.output_tokens === "number"
-        ? usageRecord.output_tokens
-        : undefined;
-  const totalTokens =
-    typeof usageRecord.total_tokens === "number"
-      ? usageRecord.total_tokens
-      : inputTokens !== undefined || outputTokens !== undefined
-        ? (inputTokens ?? 0) + (outputTokens ?? 0)
-        : undefined;
-
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    inputCacheHitTokens:
-      typeof usageRecord.prompt_cache_hit_tokens === "number"
-        ? usageRecord.prompt_cache_hit_tokens
-        : undefined,
-    inputCacheMissTokens:
-      typeof usageRecord.prompt_cache_miss_tokens === "number"
-        ? usageRecord.prompt_cache_miss_tokens
-        : undefined
-  };
-}
-
 function providerResultFromData(data: unknown, success: boolean, error?: string): ProviderResult {
   return {
     success,
     data: data as ProviderResult["data"],
     error,
-    ...extractUsage(data)
+    ...extractTokenUsage(data)
   };
 }
 
@@ -237,7 +174,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-type StreamUsage = ReturnType<typeof extractUsage>;
+type StreamUsage = TokenUsage;
 
 function hasUsageTokens(usage: StreamUsage) {
   return (
@@ -247,54 +184,108 @@ function hasUsageTokens(usage: StreamUsage) {
   );
 }
 
+async function safeLogUsage(params: Parameters<typeof logUsage>[0]) {
+  try {
+    await logUsage(params);
+  } catch (error) {
+    // Billing is already settled; a logging failure must not break the response.
+    console.error("[api-gateway] failed to log usage", {
+      requestId: params.requestId,
+      error: error instanceof Error ? error.message : error
+    });
+  }
+}
+
 /**
  * Passes an SSE stream through unchanged while parsing each `data:` chunk for an
  * OpenAI-style `usage` object. The final chunk (emitted when stream_options.include_usage
- * is true) carries the token counts, which we hand to `onComplete` once the stream ends.
+ * is true) carries the token counts, which we hand to `onComplete` exactly once —
+ * whether the stream ends normally, errors upstream, or the client disconnects.
  */
-function createUsageCapturingStream(onComplete: (usage: StreamUsage) => Promise<void> | void) {
+function createUsageCapturingStream(
+  upstream: ReadableStream<Uint8Array>,
+  onComplete: (usage: StreamUsage, aborted: boolean) => Promise<void> | void
+) {
+  const reader = upstream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let usage: StreamUsage = {};
+  let completed = false;
 
-  return new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      controller.enqueue(chunk);
-      buffer += decoder.decode(chunk, { stream: true });
-      const segments = buffer.split("\n");
-      buffer = segments.pop() ?? "";
+  const complete = async (aborted: boolean) => {
+    if (completed) {
+      return;
+    }
 
-      for (const segment of segments) {
-        const line = segment.trim();
+    completed = true;
 
-        if (!line.startsWith("data:")) {
-          continue;
-        }
+    try {
+      await onComplete(usage, aborted);
+    } catch (error) {
+      console.error("[api-gateway] failed to log streaming usage", error);
+    }
+  };
 
-        const payload = line.slice("data:".length).trim();
+  const parseChunk = (chunk: Uint8Array) => {
+    buffer += decoder.decode(chunk, { stream: true });
+    const segments = buffer.split("\n");
+    buffer = segments.pop() ?? "";
 
-        if (!payload || payload === "[DONE]") {
-          continue;
-        }
+    for (const segment of segments) {
+      const line = segment.trim();
 
-        try {
-          const parsed = JSON.parse(payload) as unknown;
-          const chunkUsage = extractUsage(parsed);
-
-          if (hasUsageTokens(chunkUsage)) {
-            usage = chunkUsage;
-          }
-        } catch {
-          // Ignore keep-alive comments and partial/non-JSON lines.
-        }
+      if (!line.startsWith("data:")) {
+        continue;
       }
-    },
-    async flush() {
+
+      const payload = line.slice("data:".length).trim();
+
+      if (!payload || payload === "[DONE]") {
+        continue;
+      }
+
       try {
-        await onComplete(usage);
-      } catch (error) {
-        console.error("[api-gateway] failed to log streaming usage", error);
+        const parsed = JSON.parse(payload) as unknown;
+        const chunkUsage = extractTokenUsage(parsed);
+
+        if (hasUsageTokens(chunkUsage)) {
+          usage = chunkUsage;
+        }
+      } catch {
+        // Ignore keep-alive comments and partial/non-JSON lines.
       }
+    }
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let result: ReadableStreamReadResult<Uint8Array>;
+
+      try {
+        result = await reader.read();
+      } catch (error) {
+        await complete(true);
+        controller.error(error);
+        return;
+      }
+
+      if (result.done) {
+        await complete(false);
+        controller.close();
+        return;
+      }
+
+      parseChunk(result.value);
+      controller.enqueue(result.value);
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } catch {
+        // The upstream connection may already be gone.
+      }
+
+      await complete(true);
     }
   });
 }
@@ -321,7 +312,7 @@ async function refundAndLogFailure(params: {
     };
   }
 
-  await logUsage({
+  await safeLogUsage({
     client: params.client,
     model: params.model,
     requestId: params.requestId,
@@ -413,7 +404,7 @@ export async function handleOpenAiCompatibleChatCompletion(request: Request): Pr
   });
 
   if (!budgetCheck.allowed) {
-    await logUsage({
+    await safeLogUsage({
       client,
       model,
       requestId,
@@ -438,89 +429,101 @@ export async function handleOpenAiCompatibleChatCompletion(request: Request): Pr
     return jsonError("Usage limit exceeded.", 402, "usage_exhausted");
   }
 
-  const creditCost = calculateCreditCost(model);
-  let transaction: Awaited<ReturnType<typeof deductCredit>>;
+  // Count this request's estimate against concurrent budget checks until its
+  // cost is logged. Release is idempotent; the streaming path releases from the
+  // stream-completion callback since the handler returns before the stream ends.
+  const releaseBudget = reserveInflightBudget(client.id, budgetCheck.estimatedCostUsd);
 
   try {
-    transaction = await deductCredit(
-      client.id,
-      creditCost,
-      `Gateway reservation ${requestId} for ${model.name}`,
-      requestId
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to reserve credit.";
-    await logUsage({
-      client,
-      model,
-      requestId,
-      status: "failed",
-      creditCost: 0,
-      providerResult: {
-        success: false,
-        data: { reason: "credit_reservation_failed", requiredCredit: creditCost },
-        error: message
-      },
-      latencyMs: Date.now() - startedAt
-    });
-    return jsonError(message, message.includes("Insufficient") ? 402 : 400, "usage_exhausted");
-  }
+    const creditCost = calculateCreditCost(model);
+    let transaction: Awaited<ReturnType<typeof deductCredit>>;
 
-  const upstreamBody = buildUpstreamBody(body, model);
-
-  if (body.stream === true) {
-    // Ask the provider to append a final chunk with token usage so we can bill the request.
-    upstreamBody.stream_options = {
-      ...(isRecord(upstreamBody.stream_options) ? upstreamBody.stream_options : {}),
-      include_usage: true
-    };
-  }
-
-  const upstream = await fetchWithTimeout(getUpstreamChatCompletionsUrl(), {
-    method: "POST",
-    headers: getUpstreamHeaders(),
-    body: JSON.stringify(upstreamBody)
-  });
-
-  if (body.stream === true) {
-    if (!upstream.ok) {
-      const data = await parseResponse(upstream);
-      const providerResult = providerResultFromData(data, false, `Upstream provider failed with status ${upstream.status}.`);
-      await refundAndLogFailure({ client, model, requestId, creditCost, providerResult, startedAt });
-      debugLogUpstream(upstream.status, data);
-      return NextResponse.json(data, { status: upstream.status });
-    }
-
-    const streamHeaders = {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive"
-    };
-
-    if (!upstream.body) {
-      await logUsage({
+    try {
+      transaction = await deductCredit(
+        client.id,
+        creditCost,
+        `Gateway reservation ${requestId} for ${model.name}`,
+        requestId
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to reserve credit.";
+      await safeLogUsage({
         client,
         model,
         requestId,
-        status: "success",
-        creditCost,
+        status: "failed",
+        creditCost: 0,
         providerResult: {
-          success: true,
-          data: {
-            stream: true,
-            upstreamStatus: upstream.status,
-            balanceAfter: transaction.balance_after
-          }
+          success: false,
+          data: { reason: "credit_reservation_failed", requiredCredit: creditCost },
+          error: message
         },
         latencyMs: Date.now() - startedAt
       });
-
-      return new Response(null, { status: upstream.status, headers: streamHeaders });
+      releaseBudget();
+      return jsonError(message, message.includes("Insufficient") ? 402 : 400, "usage_exhausted");
     }
 
-    const usageStream = upstream.body.pipeThrough(
-      createUsageCapturingStream(async (usage) => {
-        await logUsage({
+    const upstreamBody = buildUpstreamBody(body, model);
+
+    if (body.stream === true) {
+      // Ask the provider to append a final chunk with token usage so we can bill the request.
+      upstreamBody.stream_options = {
+        ...(isRecord(upstreamBody.stream_options) ? upstreamBody.stream_options : {}),
+        include_usage: true
+      };
+    }
+
+    let upstream: Response;
+
+    try {
+      upstream = await fetchWithTimeout(
+        getUpstreamChatCompletionsUrl(),
+        {
+          method: "POST",
+          headers: getUpstreamHeaders(),
+          body: JSON.stringify(upstreamBody)
+        },
+        readIntEnv("UPSTREAM_AI_TIMEOUT_MS", 30000)
+      );
+    } catch (error) {
+      // Network failure or timeout: the reserved credit must go back.
+      const message =
+        error instanceof Error && error.name === "AbortError"
+          ? "Upstream provider timed out."
+          : error instanceof Error
+            ? error.message
+            : "Upstream provider request failed.";
+      await refundAndLogFailure({
+        client,
+        model,
+        requestId,
+        creditCost,
+        providerResult: { success: false, data: { error: message }, error: message },
+        startedAt
+      });
+      releaseBudget();
+      return jsonError(message, 502, "gateway_error");
+    }
+
+    if (body.stream === true) {
+      if (!upstream.ok) {
+        const data = await parseResponse(upstream);
+        const providerResult = providerResultFromData(data, false, `Upstream provider failed with status ${upstream.status}.`);
+        await refundAndLogFailure({ client, model, requestId, creditCost, providerResult, startedAt });
+        debugLogUpstream(upstream.status, data);
+        releaseBudget();
+        return NextResponse.json(data, { status: upstream.status });
+      }
+
+      const streamHeaders = {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive"
+      };
+
+      if (!upstream.body) {
+        await safeLogUsage({
           client,
           model,
           requestId,
@@ -528,9 +531,27 @@ export async function handleOpenAiCompatibleChatCompletion(request: Request): Pr
           creditCost,
           providerResult: {
             success: true,
+            data: {
+              stream: true,
+              upstreamStatus: upstream.status,
+              balanceAfter: transaction.balance_after
+            }
+          },
+          latencyMs: Date.now() - startedAt
+        });
+
+        releaseBudget();
+        return new Response(null, { status: upstream.status, headers: streamHeaders });
+      }
+
+      const usageStream = createUsageCapturingStream(upstream.body, async (usage, aborted) => {
+        try {
+          const providerResult: ProviderResult = {
+            success: true,
             ...usage,
             data: {
               stream: true,
+              aborted,
               upstreamStatus: upstream.status,
               balanceAfter: transaction.balance_after,
               usage: hasUsageTokens(usage)
@@ -541,37 +562,68 @@ export async function handleOpenAiCompatibleChatCompletion(request: Request): Pr
                   }
                 : null
             }
-          },
-          latencyMs: Date.now() - startedAt
-        });
-      })
+          };
+          const reconciliation = await reconcileReservedCredit({
+            client,
+            model,
+            providerResult,
+            reservedCredit: creditCost,
+            requestId
+          });
+
+          await safeLogUsage({
+            client,
+            model,
+            requestId,
+            status: "success",
+            creditCost: reconciliation.finalCreditCost,
+            providerResult,
+            latencyMs: Date.now() - startedAt
+          });
+        } finally {
+          releaseBudget();
+        }
+      });
+
+      return new Response(usageStream, { status: upstream.status, headers: streamHeaders });
+    }
+
+    const data = await parseResponse(upstream);
+    debugLogUpstream(upstream.status, data);
+    const providerResult = providerResultFromData(
+      data,
+      upstream.ok,
+      upstream.ok ? undefined : `Upstream provider failed with status ${upstream.status}.`
     );
 
-    return new Response(usageStream, { status: upstream.status, headers: streamHeaders });
-  }
+    if (!upstream.ok) {
+      await refundAndLogFailure({ client, model, requestId, creditCost, providerResult, startedAt });
+      releaseBudget();
+      return NextResponse.json(data, { status: upstream.status });
+    }
 
-  const data = await parseResponse(upstream);
-  debugLogUpstream(upstream.status, data);
-  const providerResult = providerResultFromData(
-    data,
-    upstream.ok,
-    upstream.ok ? undefined : `Upstream provider failed with status ${upstream.status}.`
-  );
+    const reconciliation = await reconcileReservedCredit({
+      client,
+      model,
+      providerResult,
+      reservedCredit: creditCost,
+      requestId
+    });
 
-  if (!upstream.ok) {
-    await refundAndLogFailure({ client, model, requestId, creditCost, providerResult, startedAt });
+    await safeLogUsage({
+      client,
+      model,
+      requestId,
+      status: "success",
+      creditCost: reconciliation.finalCreditCost,
+      providerResult,
+      latencyMs: Date.now() - startedAt
+    });
+
+    releaseBudget();
     return NextResponse.json(data, { status: upstream.status });
+  } catch (error) {
+    releaseBudget();
+    throw error;
   }
-
-  await logUsage({
-    client,
-    model,
-    requestId,
-    status: "success",
-    creditCost,
-    providerResult,
-    latencyMs: Date.now() - startedAt
-  });
-
-  return NextResponse.json(data, { status: upstream.status });
 }

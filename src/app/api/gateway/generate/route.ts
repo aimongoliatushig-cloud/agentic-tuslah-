@@ -1,19 +1,10 @@
 import { jsonError, jsonOk, readJson } from "@/server/http";
+import { readBearerToken } from "@/server/api-gateway/bearer";
 import { processGatewayRequest } from "@/server/api-gateway/gatewayService";
 import { validateGatewayGeneratePayload } from "@/server/api-gateway/validation";
 import { checkRateLimit } from "@/server/api-gateway/rateLimitService";
 
 export const runtime = "nodejs";
-
-function readBearerToken(request: Request) {
-  const authorization = request.headers.get("authorization");
-
-  if (!authorization?.startsWith("Bearer ")) {
-    return null;
-  }
-
-  return authorization.slice("Bearer ".length).trim();
-}
 
 export async function POST(request: Request) {
   try {

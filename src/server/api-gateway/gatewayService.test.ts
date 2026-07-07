@@ -49,29 +49,30 @@ function createGatewaySupabaseMock(params: {
       }
 
       if (table === "api_clients") {
-        const query = {
+        let hashFilter: string | null = null;
+
+        return {
           select() {
             return this;
           },
-          eq() {
+          eq(column: string, value: string) {
+            if (column === "api_key_hash") {
+              hashFilter = value;
+            }
+
             return this;
           },
-          then(resolve: (value: unknown) => void) {
-            return Promise.resolve(
-              resolve({
-                data: [
-                  {
+          maybeSingle: async () => ({
+            data:
+              hashFilter === hashApiKey(params.apiKey)
+                ? {
                     ...params.client,
                     api_key_hash: hashApiKey(params.apiKey)
                   }
-                ],
-                error: null
-              })
-            );
-          }
+                : null,
+            error: null
+          })
         };
-
-        return query;
       }
 
       if (table === "api_models") {

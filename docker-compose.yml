@@ -1,0 +1,15 @@
+name: agentic-tuslah-gateway
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentic-tuslah-gateway
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+    ports:
+      - "3010:3000"

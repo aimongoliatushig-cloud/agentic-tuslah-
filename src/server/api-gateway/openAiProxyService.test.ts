@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   refundCreditForRequest: vi.fn(),
   calculateCreditCost: vi.fn(),
   logUsage: vi.fn(),
+  reconcileReservedCredit: vi.fn(),
   resolveModel: vi.fn(),
   validateClient: vi.fn(),
   supabase: null as unknown
@@ -30,6 +31,7 @@ vi.mock("@/server/api-gateway/creditService", () => ({
 vi.mock("@/server/api-gateway/gatewayService", () => ({
   calculateCreditCost: mocks.calculateCreditCost,
   logUsage: mocks.logUsage,
+  reconcileReservedCredit: mocks.reconcileReservedCredit,
   resolveModel: mocks.resolveModel,
   validateClient: mocks.validateClient,
   processGatewayRequest: vi.fn()
@@ -99,6 +101,7 @@ describe("OpenAI-compatible chat proxy", () => {
     mocks.checkRateLimit.mockResolvedValue({ allowed: true, limit: 100 });
     mocks.deductCredit.mockResolvedValue({ balance_after: 999 });
     mocks.calculateCreditCost.mockReturnValue(1);
+    mocks.reconcileReservedCredit.mockResolvedValue({ finalCreditCost: 1, balanceAfter: null });
     mocks.resolveModel.mockResolvedValue(model);
     mocks.validateClient.mockResolvedValue(client);
   });

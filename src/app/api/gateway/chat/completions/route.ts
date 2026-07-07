@@ -1,4 +1,6 @@
 import { jsonError, jsonOk, readJson } from "@/server/http";
+import { readBearerToken } from "@/server/api-gateway/bearer";
+import { GatewayError } from "@/server/api-gateway/errors";
 import { processGatewayRequest } from "@/server/api-gateway/gatewayService";
 import type { GatewayGeneratePayload } from "@/server/api-gateway/types";
 import { checkRateLimit } from "@/server/api-gateway/rateLimitService";
@@ -24,16 +26,6 @@ interface ChatCompletionsBody {
   [key: string]: unknown;
 }
 
-function readBearerToken(request: Request) {
-  const authorization = request.headers.get("authorization");
-
-  if (!authorization?.startsWith("Bearer ")) {
-    return null;
-  }
-
-  return authorization.slice("Bearer ".length).trim();
-}
-
 function buildGatewayPayload(body: ChatCompletionsBody): GatewayGeneratePayload {
   const { model, messages, ...parameters } = body;
   delete parameters.stream;
@@ -49,6 +41,11 @@ function buildGatewayPayload(body: ChatCompletionsBody): GatewayGeneratePayload 
 }
 
 function toOpenAiCompatibleFallback(result: Awaited<ReturnType<typeof processGatewayRequest>>) {
+  const output =
+    typeof result.provider === "object" && result.provider && "output" in result.provider
+      ? result.provider.output
+      : result.provider;
+
   return {
     id: result.requestId,
     object: "chat.completion",
@@ -59,10 +56,7 @@ function toOpenAiCompatibleFallback(result: Awaited<ReturnType<typeof processGat
         index: 0,
         message: {
           role: "assistant",
-          content:
-            typeof result.provider === "object" && result.provider && "output" in result.provider
-              ? String(result.provider.output)
-              : JSON.stringify(result.provider)
+          content: typeof output === "string" ? output : JSON.stringify(output)
         },
         finish_reason: "stop"
       }
@@ -146,6 +140,10 @@ export async function POST(request: Request) {
 
     return jsonOk(completion);
   } catch (error) {
+    if (error instanceof GatewayError) {
+      return jsonError(error.message, error.status, error.code);
+    }
+
     const message = error instanceof Error ? error.message : "Gateway chat completion failed.";
     const status =
       message.includes("Invalid or inactive")
