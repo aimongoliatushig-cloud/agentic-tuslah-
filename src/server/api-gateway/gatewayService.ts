@@ -278,11 +278,13 @@ export async function logUsage(params: {
 }
 
 /**
- * Token-billed models reserve a flat `credit_cost` up front because the real
- * usage is unknown until the provider answers. Once actual token counts are in,
- * this settles the difference: refunds when the reservation was too high, charges
- * extra when it was too low. Failures here never break the request — the
- * reservation simply stands as the final charge.
+ * Metered models (token- and unit/image-billed) reserve an estimated
+ * `credit_cost` up front because the real usage is unknown until the provider
+ * answers. Once actual token counts / billable units are in, this settles the
+ * difference: refunds when the reservation was too high, charges extra when it
+ * was too low. Failures here never break the request — the reservation simply
+ * stands as the final charge. "credit"-billed models have no metered cost
+ * (costMnt = 0) and are skipped by the guard below.
  */
 export async function reconcileReservedCredit(params: {
   client: ApiClient;
@@ -292,10 +294,6 @@ export async function reconcileReservedCredit(params: {
   requestId: string;
 }): Promise<{ finalCreditCost: number; balanceAfter: number | null }> {
   const { client, model, providerResult, reservedCredit, requestId } = params;
-
-  if (getBillingType(model) !== "token") {
-    return { finalCreditCost: reservedCredit, balanceAfter: null };
-  }
 
   const accounting = calculateUsageAccounting(model, providerResult, reservedCredit);
 

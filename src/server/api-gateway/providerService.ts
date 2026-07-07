@@ -49,23 +49,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isKieGptImage2Model(payload: ProviderPayload) {
-  const provider = payload.model.provider.toLowerCase();
-  const modelName = payload.model.name.toLowerCase();
-  const providerModel = payload.model.provider_model.toLowerCase();
-
-  return (
-    provider === "kie.ai" &&
-    (
-      modelName === "gpt-image-2" ||
-      providerModel === "gpt-image-2-text-to-image" ||
-      providerModel === "openai/gpt-image-2"
-    )
-  );
-}
-
 function isKieProvider(payload: ProviderPayload) {
   return payload.model.provider.toLowerCase() === "kie.ai";
+}
+
+function getModelConfig(payload: ProviderPayload): Record<string, unknown> {
+  return isRecord(payload.model.config) ? payload.model.config : {};
+}
+
+/**
+ * Kie exposes two API families: the generic "market" jobs API
+ * (createTask/recordInfo — images, Kling video, …) and dedicated per-model
+ * APIs like Veo (/api/v1/veo/generate). Models opt into the dedicated flow
+ * via api_models.config.kie_flow.
+ */
+function getKieFlow(payload: ProviderPayload): "veo" | "jobs" {
+  return getModelConfig(payload).kie_flow === "veo" ? "veo" : "jobs";
 }
 
 function getKieProviderModel(payload: ProviderPayload) {
@@ -147,15 +146,36 @@ function getKieAspectRatio(payload: ProviderPayload) {
 
 function buildKieCreateTaskBody(payload: ProviderPayload) {
   const callbackUrl = normalizeString(process.env.KIE_AI_CALLBACK_URL);
+  const config = getModelConfig(payload);
+  const inputDefaults = isRecord(config.input_defaults) ? config.input_defaults : {};
+  const parameters = payload.request.parameters ?? {};
+  const extraInput: Record<string, unknown> = {};
+
+  // Client parameters (duration, sound, mode, image_urls, …) pass through to
+  // the Kie task input; prompt/aspect_ratio stay canonical below.
+  for (const [key, value] of Object.entries(parameters)) {
+    if (key === "aspect_ratio" || value === undefined) {
+      continue;
+    }
+
+    extraInput[key] = value;
+  }
 
   return {
     model: getKieProviderModel(payload),
     ...(callbackUrl ? { callBackUrl: callbackUrl } : {}),
     input: {
+      ...inputDefaults,
+      ...extraInput,
       prompt: getPrompt(payload),
       aspect_ratio: getKieAspectRatio(payload)
     }
   };
+}
+
+function getKiePollTimeoutMs(payload: ProviderPayload) {
+  const configured = numberValue(getModelConfig(payload).poll_timeout_ms);
+  return configured ?? readIntEnv("KIE_AI_POLL_TIMEOUT_MS", 180000);
 }
 
 function arrayLength(value: unknown) {
@@ -380,11 +400,11 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callKieGptImage2Provider(payload: ProviderPayload): Promise<ProviderResult> {
+async function callKieJobsProvider(payload: ProviderPayload): Promise<ProviderResult> {
   const apiKey = process.env.KIE_AI_API_KEY;
   const timeoutMs = readIntEnv("UPSTREAM_AI_TIMEOUT_MS", 30000);
   const pollIntervalMs = readIntEnv("KIE_AI_POLL_INTERVAL_MS", 3000);
-  const pollTimeoutMs = readIntEnv("KIE_AI_POLL_TIMEOUT_MS", 180000);
+  const pollTimeoutMs = getKiePollTimeoutMs(payload);
   const prompt = getPrompt(payload);
 
   if (!apiKey) {
@@ -413,7 +433,7 @@ async function callKieGptImage2Provider(payload: ProviderPayload): Promise<Provi
       data: {
         error: "kie_prompt_required"
       },
-      error: "Prompt is required for Kie GPT Image 2."
+      error: `Prompt is required for ${payload.model.name}.`
     };
   }
 
@@ -557,24 +577,194 @@ async function callKieGptImage2Provider(payload: ProviderPayload): Promise<Provi
   }
 }
 
+/**
+ * Veo has a dedicated Kie API (POST /api/v1/veo/generate, poll
+ * GET /api/v1/veo/record-info) that reports progress via successFlag
+ * (0=processing, 1=success, 2/3=failed) instead of the jobs state field.
+ */
+async function callKieVeoProvider(payload: ProviderPayload): Promise<ProviderResult> {
+  const apiKey = process.env.KIE_AI_API_KEY;
+  const timeoutMs = readIntEnv("UPSTREAM_AI_TIMEOUT_MS", 30000);
+  const pollIntervalMs = readIntEnv("KIE_AI_POLL_INTERVAL_MS", 3000);
+  const pollTimeoutMs = getKiePollTimeoutMs(payload);
+  const prompt = getPrompt(payload);
+
+  if (!apiKey) {
+    return {
+      success: false,
+      data: { error: "kie_provider_not_configured" },
+      error: "Kie provider is not configured."
+    };
+  }
+
+  if (!isValidProviderApiKey(apiKey)) {
+    return {
+      success: false,
+      data: { error: "kie_provider_invalid_api_key" },
+      error: "Kie provider API key is invalid or contains unsupported characters."
+    };
+  }
+
+  if (!prompt) {
+    return {
+      success: false,
+      data: { error: "kie_prompt_required" },
+      error: `Prompt is required for ${payload.model.name}.`
+    };
+  }
+
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json"
+  };
+  const parameters = payload.request.parameters ?? {};
+  const requestedRatio = getKieAspectRatio(payload);
+  const aspectRatio = requestedRatio === "9:16" ? "9:16" : "16:9";
+  const imageUrls = Array.isArray(parameters.image_urls)
+    ? parameters.image_urls
+    : Array.isArray(parameters.imageUrls)
+      ? parameters.imageUrls
+      : undefined;
+  const callbackUrl = normalizeString(process.env.KIE_AI_CALLBACK_URL);
+
+  try {
+    const createResponse = await fetchWithTimeout(
+      buildKieUrl("/api/v1/veo/generate"),
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: payload.model.provider_model,
+          prompt,
+          aspectRatio,
+          ...(imageUrls ? { imageUrls } : {}),
+          ...(callbackUrl ? { callBackUrl: callbackUrl } : {})
+        })
+      },
+      timeoutMs
+    );
+    const createData = redactProviderData(await parseProviderResponse(createResponse));
+
+    if (!createResponse.ok) {
+      return {
+        success: false,
+        data: createData,
+        error: `Kie Veo provider failed with status ${createResponse.status}.`
+      };
+    }
+
+    const createEnvelopeError = getKieEnvelopeError(createData);
+
+    if (createEnvelopeError) {
+      return { success: false, data: createData, error: createEnvelopeError };
+    }
+
+    const taskId = extractKieTaskId(createData);
+
+    if (!taskId) {
+      return {
+        success: false,
+        data: createData,
+        error: "Kie Veo provider did not return a task ID."
+      };
+    }
+
+    const startedAt = Date.now();
+    let latestData: ProviderResult["data"] = createData;
+
+    while (Date.now() - startedAt < pollTimeoutMs) {
+      await sleep(pollIntervalMs);
+
+      const detailResponse = await fetchWithTimeout(
+        buildKieUrl(`/api/v1/veo/record-info?taskId=${encodeURIComponent(taskId)}`),
+        { method: "GET", headers },
+        timeoutMs
+      );
+      latestData = redactProviderData(await parseProviderResponse(detailResponse));
+
+      if (!detailResponse.ok) {
+        return {
+          success: false,
+          data: latestData,
+          error: `Kie Veo task detail failed with status ${detailResponse.status}.`
+        };
+      }
+
+      const detailEnvelopeError = getKieEnvelopeError(latestData);
+
+      if (detailEnvelopeError) {
+        return { success: false, data: latestData, error: detailEnvelopeError };
+      }
+
+      const taskData = extractKieTaskData(latestData);
+      const successFlag = numberValue(taskData.successFlag);
+
+      if (successFlag === 1) {
+        const responseData = isRecord(taskData.response) ? taskData.response : taskData;
+        const resultUrls = Array.from(collectStringUrls(responseData));
+        const creditsConsumed =
+          numberValue(taskData.creditsConsumed) ?? numberValue(taskData.credits_consumed);
+        const data = redactProviderData({
+          provider: "kie.ai",
+          taskId,
+          state: "success",
+          model: payload.model.provider_model,
+          result_urls: resultUrls,
+          videos: resultUrls,
+          output: resultUrls.join("\n"),
+          creditsConsumed,
+          raw: latestData
+        });
+
+        return {
+          success: true,
+          data,
+          imageCount: resultUrls.length || 1,
+          billableUnits: (creditsConsumed ?? resultUrls.length) || 1
+        };
+      }
+
+      if (successFlag === 2 || successFlag === 3) {
+        return {
+          success: false,
+          data: latestData,
+          error:
+            normalizeString(taskData.errorMessage) ||
+            normalizeString(taskData.error_message) ||
+            "Kie Veo task failed."
+        };
+      }
+    }
+
+    // Timeout is a failure so the caller refunds the reserved credit; the task
+    // may still finish on Kie's side — the ID lets the client check later.
+    return {
+      success: false,
+      data: redactProviderData({
+        provider: "kie.ai",
+        taskId,
+        state: "pending",
+        model: payload.model.provider_model,
+        raw: latestData
+      }),
+      error: `Kie Veo task did not complete before timeout. Reserved credit was refunded. Task ID: ${taskId}`
+    };
+  } catch (error) {
+    return {
+      success: false,
+      data: { error: error instanceof Error ? error.message : "Kie Veo provider request failed." },
+      error: error instanceof Error ? error.message : "Kie Veo provider request failed."
+    };
+  }
+}
+
 export async function callUpstreamProvider(
   payload: ProviderPayload
 ): Promise<ProviderResult> {
-  if (isKieGptImage2Model(payload)) {
-    return callKieGptImage2Provider(payload);
-  }
-
   if (isKieProvider(payload)) {
-    return {
-      success: false,
-      data: {
-        error: "unsupported_kie_model",
-        provider: payload.model.provider,
-        model: payload.model.name,
-        providerModel: payload.model.provider_model
-      },
-      error: "Only Kie GPT Image 2 is currently enabled."
-    };
+    return getKieFlow(payload) === "veo"
+      ? callKieVeoProvider(payload)
+      : callKieJobsProvider(payload);
   }
 
   const apiKey = process.env.UPSTREAM_AI_API_KEY;
