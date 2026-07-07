@@ -441,6 +441,90 @@ export async function getGatewayAdminData(): Promise<GatewayAdminData> {
   };
 }
 
+export interface GenerationItem {
+  id: string;
+  createdAt: string;
+  clientName: string;
+  modelName: string;
+  costMnt: number;
+  urls: string[];
+}
+
+function extractMediaUrls(value: Json): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+
+  const record = value as Record<string, Json>;
+  const urls = new Set<string>();
+
+  for (const key of ["result_urls", "videos", "images"]) {
+    const list = record[key];
+
+    if (!Array.isArray(list)) {
+      continue;
+    }
+
+    for (const item of list) {
+      if (typeof item === "string" && /^https?:\/\//i.test(item)) {
+        urls.add(item);
+      }
+    }
+  }
+
+  return Array.from(urls);
+}
+
+/** Recent successful Kie.ai generations (images/videos) with their media URLs. */
+export async function getRecentGenerations(limit = 48): Promise<GenerationItem[]> {
+  const supabase = getSupabaseAdminClient();
+  const { data: models } = await supabase.from("api_models").select("id,name,provider");
+  const kieModelIds = (models ?? [])
+    .filter((model) => model.provider.toLowerCase() === "kie.ai")
+    .map((model) => model.id);
+
+  if (kieModelIds.length === 0) {
+    return [];
+  }
+
+  const [{ data: logs }, { data: clients }] = await Promise.all([
+    supabase
+      .from("api_usage_logs")
+      .select("id,client_id,model_id,created_at,cost_mnt,provider_response")
+      .eq("status", "success")
+      .in("model_id", kieModelIds)
+      .order("created_at", { ascending: false })
+      .limit(limit * 2),
+    supabase.from("api_clients").select("id,name")
+  ]);
+  const clientNames = new Map((clients ?? []).map((client) => [client.id, client.name]));
+  const modelNames = new Map((models ?? []).map((model) => [model.id, model.name]));
+  const items: GenerationItem[] = [];
+
+  for (const log of logs ?? []) {
+    const urls = extractMediaUrls(log.provider_response);
+
+    if (urls.length === 0) {
+      continue;
+    }
+
+    items.push({
+      id: log.id,
+      createdAt: log.created_at,
+      clientName: clientNames.get(log.client_id) ?? "—",
+      modelName: modelNames.get(log.model_id) ?? "—",
+      costMnt: Number(log.cost_mnt ?? 0),
+      urls
+    });
+
+    if (items.length >= limit) {
+      break;
+    }
+  }
+
+  return items;
+}
+
 export function formatNumber(value: number) {
   return new Intl.NumberFormat("mn-MN").format(value);
 }

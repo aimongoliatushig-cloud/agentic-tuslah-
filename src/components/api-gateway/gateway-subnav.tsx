@@ -10,6 +10,7 @@ const menuItems = [
   { href: "/dashboard/api-gateway/models", label: "Моделиуд" },
   { href: "/dashboard/api-gateway/credits", label: "Гүйлгээ" },
   { href: "/dashboard/api-gateway/usage", label: "Хэрэглээний бүртгэл" },
+  { href: "/dashboard/api-gateway/generations", label: "Бүтээлүүд" },
   { href: "/dashboard/api-gateway/reports", label: "Тайлан" }
 ];
 
